@@ -356,10 +356,13 @@ class DeskMate:
         self.on_tick()
 
     def _notify_update_failed(self) -> None:
+        reason = update.update_failure_reason()
+        body = reason or "新版本下载好了但没能替换文件。"
+        body += f"\n日志：{update.swap_log()}"
         self.toasts.show(
             ORANGE,
             "上次自动更新没成功",
-            "新版本下载好了但没能替换文件。可以点菜单里的「检查更新」再试，或手动下载。",
+            body,
             [("知道了", "primary", "noop")],
             self.on_toast_action,
             auto_close_ms=0,

@@ -413,13 +413,15 @@ ping -n 2 127.0.0.1 >nul
 goto wait
 :swap
 >>"%LOG%" echo [%DATE% %TIME%] pid %PID% exited, start swapping
+rem let file handles settle before renaming
+ping -n 3 127.0.0.1 >nul
 if exist "%OLD%" rmdir /s /q "%OLD%" >>"%LOG%" 2>&1
 set /a MOVE=0
 :trymove
 set /a MOVE+=1
 move "%APP%" "%OLD%" >>"%LOG%" 2>&1
 if not exist "%APP%" goto moved
-if %MOVE% GEQ 3 goto failed
+if %MOVE% GEQ 10 goto failed_old
 ping -n 2 127.0.0.1 >nul
 goto trymove
 :moved
@@ -428,14 +430,19 @@ move "%NEW%" "%APP%" >>"%LOG%" 2>&1
 if exist "%APP%\DeskMate.exe" goto restart
 >>"%LOG%" echo [%DATE% %TIME%] new dir move failed, restoring
 move "%OLD%" "%APP%" >>"%LOG%" 2>&1
-goto failed
+goto failed_new
 :restart
 >>"%LOG%" echo [%DATE% %TIME%] new version in place, starting
 start "" "%APP%\DeskMate.exe" --restarted
 exit /b 0
-:failed
->>"%LOG%" echo [%DATE% %TIME%] update FAILED
-echo failed> "%FLAG%"
+:failed_old
+>>"%LOG%" echo [%DATE% %TIME%] update FAILED (move-old)
+echo move-old> "%FLAG%"
+start "" "%APP%\DeskMate.exe" --restarted
+exit /b 1
+:failed_new
+>>"%LOG%" echo [%DATE% %TIME%] update FAILED (move-new)
+echo move-new> "%FLAG%"
 start "" "%APP%\DeskMate.exe" --restarted
 exit /b 1
 :giveup
@@ -460,6 +467,19 @@ def _spawn_flags() -> int:
 def update_failed() -> bool:
     """上一次自动更新有没有失败（换目录脚本会留下标记）。"""
     return (UPDATE_DIR / "failed.flag").exists()
+
+
+def update_failure_reason() -> str:
+    """读到失败标记里的原因，翻成人话；没有就返回空串。"""
+    try:
+        raw = (UPDATE_DIR / "failed.flag").read_text("utf-8", "ignore").strip()
+    except OSError:
+        return ""
+    mapping = {
+        "move-old": "旧版本目录被占用，改不了名（可能有程序还开着里面的文件）",
+        "move-new": "新版本目录没能就位（可能是磁盘空间或权限问题）",
+    }
+    return mapping.get(raw, raw)
 
 
 def clear_update_failed() -> None:
@@ -521,22 +541,39 @@ def apply_update(
     if not _looks_like_zip(package):
         return False, "更新包不是有效的压缩文件", None
 
-    new_dir = UPDATE_DIR / "new"
+    app_dir = exe.parent
+
+    # 关键：解压到「和程序目录同一块盘」的兄弟目录里。
+    # 放 %TEMP% 的话，旧盘到系统盘是两个卷，move 目录会退化成整份复制，
+    # 慢且容易在中途失败；同卷只是改个名字，瞬间完成。
+    staging = app_dir.parent / f".{app_dir.name}-new"
     try:
-        if new_dir.exists():
-            shutil.rmtree(new_dir)
-        new_dir.mkdir(parents=True)
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+    except OSError:
+        staging = UPDATE_DIR / "new"
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        try:
+            staging.mkdir(parents=True)
+        except OSError as exc:
+            return False, f"创建暂存目录失败：{exc}", None
+
+    try:
         with zipfile.ZipFile(package) as archive:
-            archive.extractall(new_dir)
+            archive.extractall(staging)
     except (OSError, zipfile.BadZipFile) as exc:
+        shutil.rmtree(staging, ignore_errors=True)
         return False, f"解压更新包失败：{exc}", None
 
-    root = new_dir
+    root = staging
     if not (root / "DeskMate.exe").exists():
-        inner = new_dir / "DeskMate"
+        inner = staging / "DeskMate"
         if (inner / "DeskMate.exe").exists():
             root = inner
         else:
+            shutil.rmtree(staging, ignore_errors=True)
             return False, "更新包里没找到 DeskMate.exe", None
 
     app_dir = exe.parent
