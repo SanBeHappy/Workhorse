@@ -674,6 +674,7 @@ class UpdateDialog(DarkDialog):
 
     def __init__(self, version: str, current: str, notes: list[str], parent=None) -> None:
         super().__init__("发现新版本", 440, parent=parent)
+        self._version = version
         body = self.body()
 
         head = QHBoxLayout()
@@ -761,7 +762,7 @@ class UpdateDialog(DarkDialog):
             except Exception:
                 pass
         stamp = time.time()
-        ok, msg, proc = update.apply_update(Path(path))
+        ok, msg, proc = update.apply_update(Path(path), version=self._version)
         if not ok:
             if callable(self.after_fail):
                 try:

@@ -402,6 +402,7 @@ set "NEW=%~2"
 set "PID=%~3"
 set "LOG=%~4"
 set "FLAG=%~5"
+set "VER=%~6"
 set "OLD=%APP%.old"
 set /a TRIES=0
 :wait
@@ -437,12 +438,12 @@ start "" "%APP%\DeskMate.exe" --restarted
 exit /b 0
 :failed_old
 >>"%LOG%" echo [%DATE% %TIME%] update FAILED (move-old)
-echo move-old> "%FLAG%"
+echo move-old %VER%> "%FLAG%"
 start "" "%APP%\DeskMate.exe" --restarted
 exit /b 1
 :failed_new
 >>"%LOG%" echo [%DATE% %TIME%] update FAILED (move-new)
-echo move-new> "%FLAG%"
+echo move-new %VER%> "%FLAG%"
 start "" "%APP%\DeskMate.exe" --restarted
 exit /b 1
 :giveup
@@ -464,16 +465,47 @@ def _spawn_flags() -> int:
     return flags
 
 
+def _flag_parts() -> tuple[str, str]:
+    try:
+        parts = (UPDATE_DIR / "failed.flag").read_text("utf-8", "ignore").split()
+    except OSError:
+        return "", ""
+    reason = parts[0] if parts else ""
+    version = parts[1] if len(parts) > 1 else ""
+    return reason, version
+
+
 def update_failed() -> bool:
-    """上一次自动更新有没有失败（换目录脚本会留下标记）。"""
-    return (UPDATE_DIR / "failed.flag").exists()
+    """上一次自动更新有没有失败。
+
+    标记里带着「本该变成的版本号」：如果当前版本已经不小于它（手动覆盖安装、
+    或者重试成功了），标记就作废，免得换了新包还被旧标记追着提示。
+    """
+    flag = UPDATE_DIR / "failed.flag"
+    if not flag.exists():
+        return False
+    reason, version = _flag_parts()
+    if not reason:
+        clear_update_failed()
+        return False
+    if not version:
+        # 老格式没有版本号，无从比较，直接当作过期标记清掉
+        clear_update_failed()
+        return False
+    try:
+        from config import APP_VERSION
+    except Exception:  # noqa: BLE001
+        return True
+    if not is_newer(version, APP_VERSION):
+        clear_update_failed()
+        return False
+    return True
 
 
 def update_failure_reason() -> str:
     """读到失败标记里的原因，翻成人话；没有就返回空串。"""
-    try:
-        raw = (UPDATE_DIR / "failed.flag").read_text("utf-8", "ignore").strip()
-    except OSError:
+    raw = _flag_parts()[0]
+    if not raw:
         return ""
     mapping = {
         "move-old": "旧版本目录被占用，改不了名（可能有程序还开着里面的文件）",
@@ -493,7 +525,9 @@ def swap_log() -> Path:
     return UPDATE_DIR / "swap.log"
 
 
-def _spawn_swap(app_dir: Path, new_dir: Path, pid: int | None = None) -> "subprocess.Popen[bytes]":
+def _spawn_swap(
+    app_dir: Path, new_dir: Path, pid: int | None = None, version: str = ""
+) -> "subprocess.Popen[bytes]":
     UPDATE_DIR.mkdir(parents=True, exist_ok=True)
     clear_update_failed()
     script = UPDATE_DIR / "swap.bat"
@@ -513,6 +547,7 @@ def _spawn_swap(app_dir: Path, new_dir: Path, pid: int | None = None) -> "subpro
             str(pid or os.getpid()),
             str(log),
             str(UPDATE_DIR / "failed.flag"),
+            version,
         ],
         cwd=str(UPDATE_DIR),
         stdin=subprocess.DEVNULL,
@@ -524,7 +559,7 @@ def _spawn_swap(app_dir: Path, new_dir: Path, pid: int | None = None) -> "subpro
 
 
 def apply_update(
-    package: Path, target: Path | None = None
+    package: Path, target: Path | None = None, version: str = ""
 ) -> tuple[bool, str, "subprocess.Popen[bytes] | None"]:
     """把下载好的 zip 解压到临时目录，然后交给换目录脚本处理。
 
@@ -578,7 +613,7 @@ def apply_update(
 
     app_dir = exe.parent
     try:
-        if _spawn_swap(app_dir, root):
+        if _spawn_swap(app_dir, root, version=version):
             return True, "", None
     except OSError as exc:
         return False, f"启动更新脚本失败：{exc}", None
