@@ -48,14 +48,29 @@ def _no_window() -> int:
 
 
 def perform_shutdown(seconds: int = 30) -> tuple[bool, str]:
-    """真正执行关机；带 30 秒缓冲，这段时间里 shutdown /a 还能取消。"""
+    """真正执行关机；带 30 秒缓冲，这段时间里 shutdown /a 还能取消。
+
+    /f 必须带：不带的话 Windows 会先礼后兵，让每个程序自己关（WM_QUERYENDSESSION），
+    微信这类会弹「退出登录？」把关机卡住，系统就弹出「这些应用阻止关机」的界面等你点。
+    /d p:0:0 是「计划内 / 其它原因」，组策略要求填关机原因时不会再多弹一个选择框。
+    """
     if os.environ.get(ENV_DRY_RUN):
         return False, "dry-run（DESKMATE_NO_SHUTDOWN 已设置，没有真的关机）"
     if sys.platform != "win32":
         return False, "只支持 Windows"
     try:
         proc = subprocess.run(
-            ["shutdown", "/s", "/t", str(int(seconds)), "/c", COMMENT],
+            [
+                "shutdown",
+                "/s",
+                "/f",
+                "/t",
+                str(int(seconds)),
+                "/d",
+                "p:0:0",
+                "/c",
+                COMMENT,
+            ],
             capture_output=True,
             creationflags=_no_window(),
             timeout=10,
