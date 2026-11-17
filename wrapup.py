@@ -13,8 +13,14 @@ import time
 from ctypes import wintypes
 
 # 微信 4.x 是 Weixin.exe，3.x 是 WeChat.exe，两个都试
-WECHAT_PROCESSES = ("Weixin.exe", "WeChat.exe")
+WECHAT_PROCESSES = (
+    "Weixin.exe",        # 微信 4.x 主进程
+    "WeChat.exe",        # 微信 3.x 主进程
+    "WeChatAppEx.exe",   # 小程序容器，不关会留着托盘
+    "WeixinAppEx.exe",
+)
 
+WM_CLOSE = 0x0010
 HWND_BROADCAST = 0xFFFF
 WM_SYSCOMMAND = 0x0112
 SC_MONITORPOWER = 0xF170
@@ -27,6 +33,25 @@ KEYEVENTF_KEYUP = 0x0002
 
 def _no_window() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
+def _running(name: str) -> bool:
+    """按进程名查是否还在跑。
+
+    不能用 taskkill 的返回值判断：不带 /F 时它只是「发了个关闭消息」，
+    进程不理会（比如微信收进托盘）它照样返回 0，看起来成功了其实还在。
+    """
+    try:
+        proc = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {name}", "/NH"],
+            capture_output=True,
+            creationflags=_no_window(),
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    text = (proc.stdout or b"").decode("mbcs", "ignore").lower()
+    return name.lower() in text
 
 
 def _taskkill(name: str, force: bool) -> int:
@@ -44,29 +69,26 @@ def _taskkill(name: str, force: bool) -> int:
 
 
 def close_wechat() -> tuple[bool, str]:
-    """先礼后兵：先发关闭消息，1.2 秒后还在就强杀。"""
+    """直接强制结束微信进程，然后确认真的没了。
+
+    强制结束不会通知服务器，手机上的「已登录 Windows 电脑」要等心跳超时
+    （1~3 分钟）才消失；这是接受的取舍，不这里做模拟点击那套。
+    """
     if sys.platform != "win32":
         return False, "只支持 Windows"
 
-    closed: list[str] = []
-    for name in WECHAT_PROCESSES:
-        if _taskkill(name, force=False) == 0:
-            closed.append(name)
-
-    if not closed:
+    targets = [name for name in WECHAT_PROCESSES if _running(name)]
+    if not targets:
         return False, "微信没在运行"
 
-    time.sleep(1.2)
-    forced: list[str] = []
-    for name in closed:
-        if _taskkill(name, force=False) != 0:
-            if _taskkill(name, force=True) == 0:
-                forced.append(name)
+    for name in targets:
+        _taskkill(name, force=True)
 
-    detail = "已关闭 " + "、".join(closed)
-    if forced:
-        detail += "（" + "、".join(forced) + " 强制结束）"
-    return True, detail
+    time.sleep(0.8)
+    left = [name for name in targets if _running(name)]
+    if left:
+        return False, "没关掉：" + "、".join(left)
+    return True, "已结束 " + "、".join(targets)
 
 
 def _at_desktop() -> bool:
@@ -127,17 +149,4 @@ def monitor_off() -> tuple[bool, str]:
 
 def is_wechat_running() -> bool:
     """给设置面板的按钮做提示用：微信在不在跑。"""
-    for name in WECHAT_PROCESSES:
-        try:
-            proc = subprocess.run(
-                ["tasklist", "/FI", f"IMAGENAME eq {name}"],
-                capture_output=True,
-                creationflags=_no_window(),
-                timeout=10,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        text = (proc.stdout or b"").decode("mbcs", "ignore")
-        if name.lower() in text.lower():
-            return True
-    return False
+    return any(_running(name) for name in WECHAT_PROCESSES)
