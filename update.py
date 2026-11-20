@@ -415,14 +415,14 @@ goto wait
 :swap
 >>"%LOG%" echo [%DATE% %TIME%] pid %PID% exited, start swapping
 rem let file handles settle before renaming
-ping -n 3 127.0.0.1 >nul
+ping -n 4 127.0.0.1 >nul
 if exist "%OLD%" rmdir /s /q "%OLD%" >>"%LOG%" 2>&1
 set /a MOVE=0
 :trymove
 set /a MOVE+=1
 move "%APP%" "%OLD%" >>"%LOG%" 2>&1
 if not exist "%APP%" goto moved
-if %MOVE% GEQ 10 goto failed_old
+if %MOVE% GEQ 12 goto failed_old
 ping -n 2 127.0.0.1 >nul
 goto trymove
 :moved
@@ -437,6 +437,17 @@ goto failed_new
 start "" "%APP%\DeskMate.exe" --restarted
 exit /b 0
 :failed_old
+rem rename denied (av / indexer / explorer holds a handle): overwrite in place instead
+>>"%LOG%" echo [%DATE% %TIME%] rename denied, fallback to overwrite
+robocopy "%NEW%" "%APP%" /E /IS /NP /NFL /NDL /NJH /NJS /R:3 /W:1 >>"%LOG%" 2>&1
+rem verify the exe really became the new one (fc returns 0 only when identical)
+fc /b "%NEW%\DeskMate.exe" "%APP%\DeskMate.exe" >nul 2>&1
+if errorlevel 1 goto failed_old_hard
+>>"%LOG%" echo [%DATE% %TIME%] overwrite ok, starting
+rmdir /s /q "%NEW%" >nul 2>&1
+start "" "%APP%\DeskMate.exe" --restarted
+exit /b 0
+:failed_old_hard
 >>"%LOG%" echo [%DATE% %TIME%] update FAILED (move-old)
 echo move-old %VER%> "%FLAG%"
 start "" "%APP%\DeskMate.exe" --restarted
@@ -508,7 +519,8 @@ def update_failure_reason() -> str:
     if not raw:
         return ""
     mapping = {
-        "move-old": "旧版本目录被占用，改不了名（可能有程序还开着里面的文件）",
+        "move-old": "旧版本目录被占用：改名和原地覆盖都没成功（多半是杀软或资源管理器占着文件）。"
+                    "可以先用托盘菜单退出，再手动解压 DeskMate.zip 覆盖一次",
         "move-new": "新版本目录没能就位（可能是磁盘空间或权限问题）",
     }
     return mapping.get(raw, raw)
