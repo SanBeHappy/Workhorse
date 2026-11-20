@@ -593,6 +593,13 @@ class MainCard(QWidget):
         self._hover = False
         self._show_char = bool(cfg["show_character"])
         self._hovering = False
+        # 长按角色 3 秒：被拎起来
+        self._press_at = 0.0
+        self._lifting = False
+        self._long_timer = QTimer(self)
+        self._long_timer.setSingleShot(True)
+        self._long_timer.setInterval(3000)
+        self._long_timer.timeout.connect(self._on_long_press)
         self._char_top = CARD_TOP if self._show_char else 0
         self.fish = FishState()
         self._build()
@@ -1163,6 +1170,14 @@ class MainCard(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        pos = event.position().toPoint()
+        if self._in_fish(pos):
+            # 角色身上按下：只做长按拎起，不拖窗口（拖动只能从卡片里拖）
+            self._drag_offset = None
+            self._press_at = time.monotonic()
+            self._long_timer.start()
+            event.accept()
+            return
         self._drag_offset = (
             event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         )
@@ -1189,6 +1204,11 @@ class MainCard(QWidget):
             event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._long_timer.isActive():
+            self._long_timer.stop()
+        if getattr(self, "_lifting", False):
+            self._lifting = False
+            self.fish.lift_release()
         if self._drag_offset is not None:
             was_dragged = self._dragged
             self._drag_offset = None
@@ -1197,6 +1217,10 @@ class MainCard(QWidget):
                 self.fish.end_drag()
                 self.remember_position()
             event.accept()
+
+    def _on_long_press(self) -> None:
+        self.fish.lift()
+        self._lifting = True
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         # 双击不再打开设置（统一走 ⋯ 菜单 / 托盘菜单），

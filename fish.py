@@ -28,6 +28,17 @@ CHAR_TOP = 2.0            # 方框在窗口里的顶部 y
 
 IDLE_EXPR = "14_cheek"      # 平常就趴在窗口上托腮
 
+# 长按拎起：按住 3 秒，随机给一张「被拎起来」的表情
+LIFT_FRAMES = (
+    "19_shock",
+    "20_struggle",
+    "21_blank",
+    "22_dizzy",
+    "23_angry",
+    "24_cry",
+)
+LIFT_HOLD = 3.0
+
 # 久坐提醒：第 1/2/3+ 次分别用不同表情，每次都停 3 秒
 SIT_EXPRS = ("05_wave", "01_angry", "02_confused")
 SIT_HOLD = 3.0
@@ -59,6 +70,7 @@ DRINK_STEP = 0.34      # 每帧停留，六帧约 2 秒
 DURATION = {
     "hop": 0.78,
     "wave": 2.6,
+    "lift": LIFT_HOLD,
     "drink": DRINK_STEP * len(DRINK_FRAMES),
 }
 
@@ -117,6 +129,7 @@ class FishState:
         self._idle_since = 0.0        # 这轮待机从什么时候开始算
         self._hover_until = 0.0       # 鼠标停留表情到期时间
         self._drag_hold_until = 0.0   # 拖飞帧的 5 秒停留到期时间
+        self._lifting = False         # 被拎在手里（松手才放下来）
         self.use_theme(theme_id)
 
     def use_theme(self, theme_id: str) -> None:
@@ -167,7 +180,7 @@ class FishState:
             self._drag_hold_until = 0.0
             self._idle_since = self.t
 
-        if not self.action and not self.dragging and not self._hover_until:
+        if not self.action and not self.dragging and not self._hover_until and not self._lifting:
             if self._drag_hold_until:
                 self.expr = DRAG_FRAMES[-1]
             else:
@@ -200,7 +213,7 @@ class FishState:
 
     def hover_start(self) -> None:
         """光标刚移到角色身上：亮一下表情 17，停留 5 秒。"""
-        if self.dragging:
+        if self.dragging or self._lifting:
             return
         self._hover_until = self.t + HOVER_HOLD
         self._drag_hold_until = 0.0
@@ -251,6 +264,23 @@ class FishState:
             return MEAL_EARLY[int(elapsed / MEAL_EARLY_STEP) % len(MEAL_EARLY)]
         idx = int((elapsed - MEAL_SWITCH) / MEAL_LATE_STEP) % len(MEAL_LATE)
         return MEAL_LATE[idx]
+
+    def lift(self) -> None:
+        """长按 3 秒：随机亮一张被拎起来的表情，一直举着，松手才放下。"""
+        if self.dragging:
+            return
+        self.action = None
+        self._lifting = True
+        self._hover_until = 0.0
+        self.expr = random.choice(LIFT_FRAMES)
+
+    def lift_release(self) -> None:
+        """松手：放下来，回到待机（重新计时）。"""
+        if not self._lifting:
+            return
+        self._lifting = False
+        self._idle_since = self.t
+        self.expr = self._meal_frame() if self.meal else IDLE_EXPR
 
     def sit_remind(self, count: int = 1) -> None:
         """久坐提醒：第 1 次招手，第 2 次生气，第 3 次之后一脸懵。"""
@@ -362,6 +392,10 @@ class FishState:
                 squash = (progress - 0.86) / 0.14
                 sy *= 1 - 0.08 * math.sin(math.pi * squash)
                 sx *= 1 + 0.07 * math.sin(math.pi * squash)
+        elif self.action == "lift":
+            rise = min(1.0, progress * 4.0)
+            dy -= 14 * rise
+            rot = 3.5 * math.sin(self.t * 9) * rise
         elif self.action == "wave":
             dy -= 2.5 * abs(math.sin(progress * math.pi * 2))
         elif self.action == "dizzy":
