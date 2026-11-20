@@ -23,18 +23,28 @@ DOT = QColor("#FF8A4C")
 BOB_SPEED = 1.5          # 满水时上下浮动的角速度
 
 
-def _asset_dir() -> Path:
+def _asset_dir(pixel: bool = False) -> Path:
+    """玻璃风用线稿杯，像素风用 pixel 那套。"""
+    folder = "cup_pixel" if pixel else "cup"
     base = getattr(sys, "_MEIPASS", None)
     if base:
-        return Path(base) / "assets" / "cup"
-    return Path(__file__).resolve().parent / "assets" / "cup"
+        return Path(base) / "assets" / folder
+    return Path(__file__).resolve().parent / "assets" / folder
 
 
-_CACHE: dict[str, QPixmap] = {}
+def _use_pixel() -> bool:
+    try:
+        import style as style_mod
+        return style_mod.current().pixel_font
+    except Exception:
+        return False
+
+
+_CACHE: dict[tuple[bool, str], QPixmap] = {}
 
 # 缩放过的图缓存起来：杯子每秒要重画好几趟，每趟都重新 scale 一次太浪费，
 # 也容易在长时间运行后攒出奇怪的图形资源状态。
-_SCALED: dict[tuple[str, int, int], QPixmap] = {}
+_SCALED: dict[tuple[bool, str, int, int], QPixmap] = {}
 
 _logger = None
 
@@ -53,29 +63,30 @@ def _log(message: str) -> None:
             pass
 
 
-def _load(name: str) -> QPixmap:
-    pix = _CACHE.get(name)
+def _load(name: str, pixel: bool = False) -> QPixmap:
+    key = (pixel, name)
+    pix = _CACHE.get(key)
     if pix is None or pix.isNull():
         # 加载失败不缓存，下次重画再试一次（临时读不到文件时能自己恢复）
-        pix = QPixmap(str(_asset_dir() / f"{name}.png"))
+        pix = QPixmap(str(_asset_dir(pixel) / f"{name}.png"))
         if not pix.isNull():
-            _CACHE[name] = pix
+            _CACHE[key] = pix
     return pix
 
 
-def _pixmap(name: str) -> QPixmap:
-    pix = _load(name)
+def _pixmap(name: str, pixel: bool = False) -> QPixmap:
+    pix = _load(name, pixel)
     if pix.isNull():
-        _log(f"水杯素材读取失败：{_asset_dir() / (name + '.png')}")
+        _log(f"水杯素材读取失败：{_asset_dir(pixel) / (name + '.png')}")
         for fallback in ("0", "50", "100", "25", "75"):
-            other = _load(fallback)
+            other = _load(fallback, pixel)
             if not other.isNull():
                 return other
     return pix
 
 
-def _scaled_pixmap(name: str, src: QPixmap, w: int, h: int) -> QPixmap:
-    key = (name, w, h)
+def _scaled_pixmap(name: str, src: QPixmap, w: int, h: int, pixel: bool = False) -> QPixmap:
+    key = (pixel, name, w, h)
     cached = _SCALED.get(key)
     if cached is not None and not cached.isNull():
         return cached
@@ -138,19 +149,20 @@ class DrinkCup:
                 break
         return FRAMES[index]
 
-    def _frame(self) -> QPixmap:
-        return _pixmap(self._frame_name())
+    def _frame(self, pixel: bool = False) -> QPixmap:
+        return _pixmap(self._frame_name(), pixel)
 
     def frame_aspect(self) -> float:
         """高 / 宽。外部按这个比例摆位置，画的时候就不会被拉伸或留空。"""
-        src = self._frame()
+        src = self._frame(_use_pixel())
         if src.isNull() or src.width() == 0:
             return 0.887
         return src.height() / src.width()
 
     def paint(self, painter: QPainter, rect: QRect | None = None) -> None:
+        pixel = _use_pixel()
         name = self._frame_name()
-        src = _pixmap(name)
+        src = _pixmap(name, pixel)
         area = QRect(rect) if rect is not None else self.rect()
         if area.isEmpty():
             _log(f"水杯区域为空：{self._rect}")
@@ -160,7 +172,7 @@ class DrinkCup:
             return
 
         w, h = area.width(), area.height()
-        scaled = _scaled_pixmap(name, src, w, h)
+        scaled = _scaled_pixmap(name, src, w, h, pixel)
         if scaled.isNull():
             return
         bob = math.sin(self._phase) * 1.6 if self._full else 0.0
@@ -172,9 +184,13 @@ class DrinkCup:
 
         if self._cups > 0:
             try:
-                font = QFont()
-                font.setPixelSize(max(11, int(h * 0.19)))
-                font.setWeight(QFont.Weight.DemiBold)
+                if pixel:
+                    from theme import ui_font
+                    font = ui_font(max(12, int(round(h * 0.2))))
+                else:
+                    font = QFont()
+                    font.setPixelSize(max(11, int(h * 0.19)))
+                    font.setWeight(QFont.Weight.DemiBold)
                 painter.setFont(font)
                 box = QRectF(x, y, scaled.width() * 0.76, scaled.height())
                 flag = int(Qt.AlignmentFlag.AlignCenter)
@@ -188,7 +204,7 @@ class DrinkCup:
                 # 数字画不出来不能连累杯身
                 _log(f"水杯数字绘制失败（{self._cups}）：{exc}")
 
-        if self._full:
+        if self._full and not pixel:
             alpha = int(150 + 105 * abs(math.sin(self._phase * 0.6)))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(DOT.red(), DOT.green(), DOT.blue(), alpha))

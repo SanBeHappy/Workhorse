@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 import config as config_module
+import style as style_mod
 from config import APP_TITLE, APP_VERSION
 from engine import parse_time
 from theme import (
@@ -223,6 +224,7 @@ class SettingsWindow(QDialog):
     request_themes = Signal()
     weather_changed = Signal()
     try_wrapup = Signal()
+    card_style_changed = Signal(str)
 
     def __init__(self, cfg, parent: QWidget | None = None) -> None:
         super().__init__(
@@ -232,7 +234,7 @@ class SettingsWindow(QDialog):
         self.cfg = cfg
         self.setWindowTitle(f"{APP_TITLE} 设置")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setStyleSheet(BASE_QSS + SETTINGS_QSS)
+        self.setStyleSheet(style_mod.base_qss() + style_mod.settings_qss())
         self.setFixedWidth(452)
         self._drag: QPoint | None = None
         self._build()
@@ -443,6 +445,32 @@ class SettingsWindow(QDialog):
         body.addWidget(self._divider())
         body.addSpacing(10)
 
+        # ---- 卡片风格 ----
+        body.addWidget(self._section("卡片风格"))
+        body.addSpacing(9)
+        style_row = QHBoxLayout()
+        style_row.setContentsMargins(0, 0, 0, 0)
+        style_row.setSpacing(8)
+        self.style_buttons: dict[str, QPushButton] = {}
+        for preset in style_mod.order():
+            chip = QPushButton(preset.name)
+            chip.setObjectName("styleChip")
+            chip.setCheckable(True)
+            chip.setAutoExclusive(True)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.setFont(ui_font(12))
+            chip.setFixedHeight(34)
+            chip.setToolTip(preset.desc)
+            chip.clicked.connect(lambda _=False, k=preset.key: self._pick_style(k))
+            self.style_buttons[preset.key] = chip
+            style_row.addWidget(chip, 1)
+        body.addLayout(style_row)
+        body.addSpacing(7)
+        body.addWidget(self._hint("切换立即生效，不用点保存；设置面板会一起换"))
+        body.addSpacing(14)
+        body.addWidget(self._divider())
+        body.addSpacing(10)
+
         # ---- 角色主题 ----
         body.addWidget(self._section("角色主题"))
         body.addSpacing(9)
@@ -602,10 +630,30 @@ class SettingsWindow(QDialog):
             chip.setChecked(index in shut_days)
         self.shutdown_time.setTime(_to_qtime(self.cfg["shutdown_time"], "21:30"))
         self.wrapup_check.setChecked(bool(self.cfg["wrapup_enabled"]))
+        current_style = style_mod.current().key
+        for key, chip in self.style_buttons.items():
+            chip.setChecked(key == current_style)
         self.refresh_theme()
         self.city_edit.setText(self.cfg["weather_city"] or "")
         self.sound_check.setChecked(bool(self.cfg["sound"]))
         self.startup_check.setChecked(config_module.is_autostart())
+
+    def sync_style(self, key: str) -> None:
+        """外部（托盘菜单）切了风格时，把这里的按钮勾选同步过来。"""
+        for name, chip in self.style_buttons.items():
+            chip.setChecked(name == key)
+
+    def _pick_style(self, key: str) -> None:
+        self.cfg["card_style"] = key
+        self.cfg.save()
+        self.card_style_changed.emit(key)
+
+    def apply_style(self) -> None:
+        """风格切换后重新上色：整窗 QSS 重设一遍，再重画背景。"""
+        st = style_mod.current()
+        self.setStyleSheet(style_mod.base_qss() + style_mod.settings_qss())
+        self.theme_value.setStyleSheet(f"color: {st.text_hi}; padding: 0;")
+        self.update()
 
     def _try_wrapup(self) -> None:
         answer = QMessageBox.question(
@@ -665,9 +713,13 @@ class SettingsWindow(QDialog):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
-        painter.setPen(QPen(QColor(255, 255, 255, 34), 1))
-        painter.setBrush(QColor(BG))
-        painter.drawRoundedRect(rect, 16, 16)
+        st = style_mod.current()
+        border = QColor(st.border)
+        if not border.isValid():
+            border = QColor(255, 255, 255, 34)
+        painter.setPen(QPen(border, 2 if st.frame else 1))
+        painter.setBrush(QColor(st.panel))
+        painter.drawRoundedRect(rect, st.radius, st.radius)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and event.position().y() < 50:

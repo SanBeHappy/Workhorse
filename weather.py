@@ -51,8 +51,68 @@ SNOW_COLOR = QColor("#DCE8FA")
 BOLT_COLOR = QColor("#FFD24D")
 
 
+def _pixel_blocks(kind: str) -> list[tuple[int, int, int, int, str]]:
+    """12×12 网格上的方块，返回 (x, y, w, h, 颜色键)。"""
+    sun = "#FFC24D"
+    cloud = "#C6CADB"
+    rain = "#6FA8FF"
+    snow = "#DCE8FA"
+    bolt = "#FFD24D"
+    if kind == SUN:
+        return [
+            (3, 3, 6, 6, sun),
+            (5, 0, 2, 2, sun), (5, 10, 2, 2, sun),
+            (0, 5, 2, 2, sun), (10, 5, 2, 2, sun),
+        ]
+    if kind == SUN_CLOUD:
+        return [
+            (2, 1, 5, 5, sun), (1, 6, 3, 3, sun),
+            (5, 6, 6, 3, cloud), (4, 8, 8, 3, cloud),
+        ]
+    if kind == CLOUD:
+        return [(3, 4, 6, 3, cloud), (2, 6, 8, 3, cloud), (5, 3, 3, 2, cloud)]
+    if kind == RAIN:
+        return [
+            (3, 3, 6, 3, cloud), (2, 5, 8, 3, cloud),
+            (3, 9, 1, 3, rain), (6, 9, 1, 3, rain), (8, 9, 1, 3, rain),
+        ]
+    if kind == SNOW:
+        return [
+            (3, 3, 6, 3, cloud), (2, 5, 8, 3, cloud),
+            (3, 9, 2, 2, snow), (6, 10, 2, 2, snow), (9, 9, 2, 2, snow),
+        ]
+    if kind == THUNDER:
+        return [
+            (3, 3, 6, 3, cloud), (2, 5, 8, 3, cloud),
+            (6, 8, 2, 2, bolt), (5, 10, 2, 2, bolt), (4, 8, 2, 2, bolt),
+        ]
+    # FOG
+    return [(2, 4, 8, 1, cloud), (3, 6, 7, 1, cloud), (2, 8, 8, 1, cloud)]
+
+
+def draw_icon_pixel(painter: QPainter, rect: QRectF, kind: str) -> None:
+    """像素风图标：12×12 网格，全部用方块画，边缘不抗锯齿。"""
+    unit = min(rect.width(), rect.height()) / 12.0
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+    painter.setPen(Qt.PenStyle.NoPen)
+    for gx, gy, gw, gh, color in _pixel_blocks(kind):
+        painter.fillRect(
+            QRectF(rect.left() + gx * unit, rect.top() + gy * unit, gw * unit, gh * unit),
+            QColor(color),
+        )
+    painter.restore()
+
+
 def draw_icon(painter: QPainter, rect: QRectF, kind: str) -> None:
     """把天气图标画进 rect（正方形）。"""
+    try:
+        import style as style_mod
+        if style_mod.current().pixel_font:
+            draw_icon_pixel(painter, rect, kind)
+            return
+    except Exception:
+        pass
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setPen(Qt.PenStyle.NoPen)
@@ -243,7 +303,11 @@ class WeatherBadge(QWidget):
             self._kind,
         )
         painter.setFont(self._font)
-        painter.setPen(QColor(TEXT_MID))
+        try:
+            import style as style_mod
+            painter.setPen(QColor(style_mod.current().text_mid))
+        except Exception:
+            painter.setPen(QColor(TEXT_MID))
         painter.drawText(
             QRectF(self.ICON + 4, 0, self.width() - self.ICON - 4, self.height()),
             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft),

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -114,6 +116,103 @@ def card_border(hover: bool = False) -> QColor:
 
 UI_FAMILY = "Microsoft YaHei UI"
 
+_PIXEL_FAMILY: str | None = None
+
+
+def pixel_family() -> str:
+    """像素字体（Ark Pixel 12px，OFL 协议），随包一起分发。"""
+    global _PIXEL_FAMILY
+    if _PIXEL_FAMILY is not None:
+        return _PIXEL_FAMILY
+    base = getattr(sys, "_MEIPASS", None)
+    root = Path(base) if base else Path(__file__).resolve().parent
+    path = root / "assets" / "fonts" / "ark-pixel-12px.ttf"
+    _PIXEL_FAMILY = ""
+    try:
+        font_id = QFontDatabase.addApplicationFont(str(path))
+        families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
+        if families:
+            _PIXEL_FAMILY = families[0]
+    except Exception:
+        _PIXEL_FAMILY = ""
+    return _PIXEL_FAMILY
+
+
+_LATIN_FAMILY: str | None = None
+
+
+def digit_family() -> str:
+    """像素字体的拉丁子集：中文那套里没有数字，倒计时要用这个。"""
+    global _LATIN_FAMILY
+    if _LATIN_FAMILY is not None:
+        return _LATIN_FAMILY
+    base = getattr(sys, "_MEIPASS", None)
+    root = Path(base) if base else Path(__file__).resolve().parent
+    path = root / "assets" / "fonts" / "ark-pixel-12px-latin.ttf"
+    _LATIN_FAMILY = ""
+    try:
+        font_id = QFontDatabase.addApplicationFont(str(path))
+        families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
+        if families:
+            _LATIN_FAMILY = families[0]
+    except Exception:
+        _LATIN_FAMILY = ""
+    return _LATIN_FAMILY
+
+
+_DSEG_FAMILY: str | None = None
+
+
+def dseg_family() -> str:
+    """七段数码管字体（DSEG7 Classic，SIL OFL），只用来显示倒计时数字。"""
+    global _DSEG_FAMILY
+    if _DSEG_FAMILY is not None:
+        return _DSEG_FAMILY
+    base = getattr(sys, "_MEIPASS", None)
+    root = Path(base) if base else Path(__file__).resolve().parent
+    path = root / "assets" / "fonts" / "dseg7-classic.ttf"
+    _DSEG_FAMILY = ""
+    try:
+        font_id = QFontDatabase.addApplicationFont(str(path))
+        families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
+        if families:
+            _DSEG_FAMILY = families[0]
+    except Exception:
+        _DSEG_FAMILY = ""
+    return _DSEG_FAMILY
+
+
+def segment_font(px: int) -> QFont:
+    """倒计时用的数码管字体；拿不到就退回等宽字体。"""
+    font = QFont(dseg_family() or mono_family())
+    font.setPixelSize(px)
+    font.setWeight(QFont.Weight.Normal)
+    return font
+
+
+# 像素字体是按 12px 网格设计的，只有 12 的整数倍才不糊
+_PIXEL_SIZES = {11: 12, 12: 12, 13: 12, 14: 12, 26: 24, 30: 36, 32: 36}
+
+
+def pixel_text_font(px: int) -> QFont:
+    """像素字体，但按指定像素字号（不吸附到 12 的倍数），给需要中间字号的场合。"""
+    font = QFont(pixel_family() or UI_FAMILY)
+    font.setPixelSize(px)
+    font.setStyleStrategy(QFont.StyleStrategy.NoAntialias)
+    return font
+
+
+def _style_pixel() -> bool:
+    try:
+        import style as style_mod
+        return style_mod.current().pixel_font
+    except Exception:
+        return False
+
+
+def _pixel_size(px: int) -> int:
+    return _PIXEL_SIZES.get(px, px)
+
 _mono: str | None = None
 
 
@@ -134,13 +233,34 @@ def mono_family() -> str:
 
 
 def ui_font(px: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
-    font = QFont(UI_FAMILY)
+    family = UI_FAMILY
+    if _style_pixel():
+        family = pixel_family() or UI_FAMILY
+        px = _pixel_size(px)
+    font = QFont(family)
+    if family != UI_FAMILY:
+        # 中文走中文子集，数字/符号缺字时由拉丁子集补，
+        # 最后再用系统字体兜底，避免出现方块
+        latin = digit_family()
+        family_list = [family] + ([latin] if latin and latin != family else []) + [UI_FAMILY]
+        font.setFamilies(family_list)
     font.setPixelSize(px)
     font.setWeight(weight)
+    if family != UI_FAMILY:
+        # 像素字体一开抗锯齿就糊，直接关掉
+        font.setStyleStrategy(QFont.StyleStrategy.NoAntialias)
     return font
 
 
 def mono_font(px: int, weight: QFont.Weight = QFont.Weight.DemiBold) -> QFont:
+    if _style_pixel():
+        family = pixel_family() or mono_family()
+        font = QFont(family)
+        font.setPixelSize(_pixel_size(px))
+        font.setWeight(weight)
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setStyleStrategy(QFont.StyleStrategy.NoAntialias)
+        return font
     font = QFont(mono_family())
     font.setPixelSize(px)
     font.setWeight(weight)

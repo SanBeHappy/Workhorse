@@ -9,7 +9,7 @@ from pathlib import Path
 
 APP_NAME = "DeskMate"
 APP_TITLE = "工位伴侣"
-APP_VERSION = "1.0.28"
+APP_VERSION = "1.0.29"
 
 def _resolve_data_dir() -> Path:
     """默认存 %APPDATA%；如果 exe 旁边有 portable.txt，就存到 exe 同级的 DeskMate-data。
@@ -49,6 +49,8 @@ DEFAULTS: dict = {
     "weekly_report_enabled": True,
     "weekly_report_time": "17:40",
     "report_done_date": "",
+    # 卡片风格：glass = 深蓝玻璃（默认），pixel = 像素 RPG
+    "card_style": "glass",
     # 下班收尾（关微信 → 回桌面 → 关屏）
     "wrapup_enabled": True,
     "wrapup_done_date": "",

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 import char_theme
 import cup
+import style as style_mod
 import feishu
 import update
 import wrapup
@@ -32,7 +33,7 @@ from engine import Engine, parse_time
 from settings import SettingsWindow
 from shutdown import ShutdownScheduler, WARN_BEFORE
 from theme_ui import ThemeEditorWindow, ThemeManagerWindow, UpdateDialog
-from theme import MINT, ORANGE, SETTINGS_QSS, app_icon
+from theme import MINT, ORANGE, SETTINGS_QSS, app_icon, ui_font
 from toast import (
     ToastManager,
     show_off_again,
@@ -99,6 +100,8 @@ class DeskMate:
     def __init__(self, app: QApplication) -> None:
         self.app = app
         self.cfg = Config()
+        style_mod.set_current(self.cfg["card_style"])
+        self.app.setFont(ui_font(12))
         cup.set_logger(log)
         # 主题可能被外部删掉了，静默回落到内置并回写
         resolved = char_theme.resolve(self.cfg["char_theme"])
@@ -151,7 +154,8 @@ class DeskMate:
         tray.setToolTip(APP_TITLE)
 
         menu = QMenu()
-        menu.setStyleSheet(SETTINGS_QSS)
+        self._tray_menu = menu
+        menu.setStyleSheet(style_mod.settings_qss())
         self.action_show = menu.addAction("显示卡片")
         self.action_show.triggered.connect(self.show_card)
         menu.addSeparator()
@@ -162,6 +166,14 @@ class DeskMate:
         self.action_pause = menu.addAction("暂停久坐提醒 30 分钟")
         self.action_pause.triggered.connect(self._toggle_pause)
         menu.addSeparator()
+        self.menu_style = menu.addMenu("卡片风格")
+        self._style_actions = {}
+        for preset in style_mod.order():
+            act = self.menu_style.addAction(preset.name)
+            act.setCheckable(True)
+            act.setChecked(preset.key == style_mod.current().key)
+            act.triggered.connect(lambda _=False, k=preset.key: self.apply_style(k))
+            self._style_actions[preset.key] = act
         self.menu_theme = menu.addMenu("角色主题")
         menu.addSeparator()
         self.action_update = menu.addAction(f"检查更新(V{APP_VERSION})")
@@ -255,6 +267,7 @@ class DeskMate:
         self.settings_window.request_themes.connect(self.open_theme_manager)
         self.settings_window.weather_changed.connect(self.refresh_weather)
         self.settings_window.try_wrapup.connect(self.run_wrapup)
+        self.settings_window.card_style_changed.connect(self.apply_style)
         self.settings_window.show()
         self.settings_window.setWindowIcon(app_icon())
         self._center_settings()
@@ -495,6 +508,23 @@ class DeskMate:
             self._wrapup_date = today
             log(f"下班收尾触发：{target:%H:%M}")
             self.run_wrapup()
+
+    def apply_style(self, key: str) -> None:
+        """切换卡片风格：卡片、设置面板、托盘菜单一起换，立即生效。"""
+        if key == style_mod.current().key:
+            return
+        style_mod.set_current(key)
+        self.app.setFont(ui_font(12))
+        self.card.apply_style()
+        menu = getattr(self, "_tray_menu", None)
+        if menu is not None:
+            menu.setStyleSheet(style_mod.settings_qss())
+        for key, act in getattr(self, "_style_actions", {}).items():
+            act.setChecked(key == style_mod.current().key)
+        if self.settings_window is not None:
+            self.settings_window.sync_style(style_mod.current().key)
+            self.settings_window.apply_style()
+        log(f"卡片风格切换：{style_mod.current().name}")
 
     def run_wrapup(self) -> None:
         """执行下班收尾三步，中间留点间隔让系统跟上。"""
