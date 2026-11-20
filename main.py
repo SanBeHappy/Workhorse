@@ -21,7 +21,6 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-import char_theme
 import cup
 import style as style_mod
 import feishu
@@ -32,7 +31,7 @@ from config import APP_TITLE, APP_VERSION, Config
 from engine import Engine, parse_time
 from settings import SettingsWindow
 from shutdown import ShutdownScheduler, WARN_BEFORE
-from theme_ui import ThemeEditorWindow, ThemeManagerWindow, UpdateDialog
+from theme_ui import UpdateDialog
 from theme import MINT, ORANGE, SETTINGS_QSS, app_icon, ui_font
 from toast import (
     ToastManager,
@@ -103,11 +102,6 @@ class DeskMate:
         style_mod.set_current(self.cfg["card_style"])
         self.app.setFont(ui_font(12))
         cup.set_logger(log)
-        # 主题可能被外部删掉了，静默回落到内置并回写
-        resolved = char_theme.resolve(self.cfg["char_theme"])
-        if resolved != self.cfg["char_theme"]:
-            self.cfg["char_theme"] = resolved
-            self.cfg.save()
         self.engine = Engine(self.cfg)
         self.shutdown = ShutdownScheduler(self.cfg)
         self._wrapup_date = ""
@@ -115,8 +109,6 @@ class DeskMate:
         if update.update_failed():
             QTimer.singleShot(1500, self._notify_update_failed)
         self.settings_window: SettingsWindow | None = None
-        self.theme_manager: ThemeManagerWindow | None = None
-        self.theme_editor: ThemeEditorWindow | None = None
         self.updater: update.UpdateChecker | None = None
         self._silent_check = False
         # 每 30 分钟悄悄查一次新版本，有更新就在卡片上亮红字
@@ -174,7 +166,10 @@ class DeskMate:
             act.setChecked(preset.key == style_mod.current().key)
             act.triggered.connect(lambda _=False, k=preset.key: self.apply_style(k))
             self._style_actions[preset.key] = act
-        self.menu_theme = menu.addMenu("角色主题")
+        self.action_character = menu.addAction("显示角色")
+        self.action_character.setCheckable(True)
+        self.action_character.setChecked(bool(self.cfg["show_character"]))
+        self.action_character.triggered.connect(self.toggle_character)
         menu.addSeparator()
         self.action_update = menu.addAction(f"检查更新(V{APP_VERSION})")
         self.action_update.triggered.connect(self.check_update)
@@ -187,11 +182,11 @@ class DeskMate:
         tray.setContextMenu(menu)
         tray.activated.connect(self._on_tray_activated)
         tray.show()
-        self._rebuild_theme_menu()
         return tray
 
     def _sync_menu(self) -> None:
         self.action_show.setText("隐藏卡片" if self.card.isVisible() else "显示卡片")
+        self.action_character.setChecked(bool(self.cfg["show_character"]))
         paused = bool(self.engine.pause_until)
         self.action_pause.setText(
             "恢复久坐提醒" if paused else "暂停久坐提醒 30 分钟"
@@ -205,24 +200,12 @@ class DeskMate:
             )
         else:
             self.action_drink.setText("喝水重置（提醒已关闭）")
-        self._rebuild_theme_menu()
 
-    def _rebuild_theme_menu(self) -> None:
-        sub = self.menu_theme
-        sub.clear()
-        group = QActionGroup(sub)
-        group.setExclusive(True)
-        current = char_theme.resolve(self.cfg["char_theme"])
-        for info in char_theme.list_themes():
-            act = sub.addAction(info.name)
-            act.setCheckable(True)
-            act.setChecked(info.id == current)
-            act.triggered.connect(lambda _=False, i=info.id: self.apply_theme(i))
-            group.addAction(act)
-        sub.addSeparator()
-        manage = sub.addAction("管理主题…")
-        manage.triggered.connect(self.open_theme_manager)
-        self._theme_group = group
+    def toggle_character(self, checked: bool) -> None:
+        self.cfg["show_character"] = bool(checked)
+        self.cfg.save()
+        self.card.set_character_visible(bool(checked))
+        log(f"角色显示：{'开' if checked else '关'}")
 
     def _toggle_pause(self) -> None:
         if self.engine.pause_until:
@@ -264,7 +247,6 @@ class DeskMate:
             return
         self.settings_window = SettingsWindow(self.cfg, None)
         self.settings_window.saved.connect(self.on_settings_saved)
-        self.settings_window.request_themes.connect(self.open_theme_manager)
         self.settings_window.weather_changed.connect(self.refresh_weather)
         self.settings_window.try_wrapup.connect(self.run_wrapup)
         self.settings_window.card_style_changed.connect(self.apply_style)
@@ -273,41 +255,6 @@ class DeskMate:
         self._center_settings()
         self.settings_window.raise_()
         self.settings_window.activateWindow()
-
-    def apply_theme(self, theme_id: str) -> None:
-        theme_id = char_theme.resolve(theme_id)
-        self.cfg["char_theme"] = theme_id
-        self.cfg.save()
-        self.card.apply_theme(theme_id)
-        self.on_tick()
-        if self.settings_window is not None and self.settings_window.isVisible():
-            self.settings_window.refresh_theme()
-
-    def open_theme_manager(self) -> None:
-        if self.theme_manager is None:
-            self.theme_manager = ThemeManagerWindow(self.cfg, None)
-            self.theme_manager.theme_applied.connect(self.apply_theme)
-            self.theme_manager.edit_requested.connect(self.open_theme_editor)
-        else:
-            self.theme_manager.reload_list()
-        self.theme_manager.show()
-        self.theme_manager.setWindowIcon(app_icon())
-        self.theme_manager.raise_()
-        self.theme_manager.activateWindow()
-
-    def open_theme_editor(self, theme_id: str) -> None:
-        if char_theme.theme_dir(theme_id) is None:
-            return
-        if self.theme_editor is not None:
-            self.theme_editor.close()
-            self.theme_editor.deleteLater()
-        self.theme_editor = ThemeEditorWindow(theme_id, self.cfg, None)
-        self.theme_editor.theme_applied.connect(self.apply_theme)
-        self.theme_editor.theme_touched.connect(self.card.apply_theme)
-        self.theme_editor.show()
-        self.theme_editor.setWindowIcon(app_icon())
-        self.theme_editor.raise_()
-        self.theme_editor.activateWindow()
 
     def _center_settings(self) -> None:
         window = self.settings_window
@@ -483,7 +430,7 @@ class DeskMate:
             return
         elif event.kind == "sit":
             self._sound("sit")
-            self.card.fish.react("sit")
+            self.card.fish.sit_remind(self.engine.sit_alerts)
             show_sit(
                 self.toasts, event.minutes, event.hard, self.on_toast_action
             )

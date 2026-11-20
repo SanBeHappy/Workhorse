@@ -221,7 +221,6 @@ class Check(QWidget):
 
 class SettingsWindow(QDialog):
     saved = Signal()
-    request_themes = Signal()
     weather_changed = Signal()
     try_wrapup = Signal()
     card_style_changed = Signal(str)
@@ -471,32 +470,6 @@ class SettingsWindow(QDialog):
         body.addWidget(self._divider())
         body.addSpacing(10)
 
-        # ---- 角色主题 ----
-        body.addWidget(self._section("角色主题"))
-        body.addSpacing(9)
-        theme_row = QHBoxLayout()
-        theme_row.setContentsMargins(0, 0, 0, 0)
-        theme_row.setSpacing(8)
-        self.theme_value = QLabel("大肥鱼")
-        self.theme_value.setFont(ui_font(13))
-        self.theme_value.setStyleSheet(f"color: {TEXT_HI}; padding: 0;")
-        manage_theme = QPushButton("管理主题…")
-        manage_theme.setObjectName("mini")
-        manage_theme.setCursor(Qt.CursorShape.PointingHandCursor)
-        manage_theme.setFixedHeight(28)
-        manage_theme.setFixedWidth(88)
-        manage_theme.clicked.connect(self.request_themes)
-        theme_row.addWidget(self._field("当前主题"))
-        theme_row.addWidget(self.theme_value, 1)
-        theme_row.addWidget(manage_theme, 0)
-        body.addLayout(theme_row)
-        body.addSpacing(6)
-        body.addWidget(self._hint("切换立即生效，不用点保存"))
-
-        body.addSpacing(14)
-        body.addWidget(self._divider())
-        body.addSpacing(10)
-
         # ---- 其它 ----
         city_row = QHBoxLayout()
         city_row.setContentsMargins(0, 0, 0, 0)
@@ -633,7 +606,6 @@ class SettingsWindow(QDialog):
         current_style = style_mod.current().key
         for key, chip in self.style_buttons.items():
             chip.setChecked(key == current_style)
-        self.refresh_theme()
         self.city_edit.setText(self.cfg["weather_city"] or "")
         self.sound_check.setChecked(bool(self.cfg["sound"]))
         self.startup_check.setChecked(config_module.is_autostart())
@@ -652,7 +624,6 @@ class SettingsWindow(QDialog):
         """风格切换后重新上色：整窗 QSS 重设一遍，再重画背景。"""
         st = style_mod.current()
         self.setStyleSheet(style_mod.base_qss() + style_mod.settings_qss())
-        self.theme_value.setStyleSheet(f"color: {st.text_hi}; padding: 0;")
         self.update()
 
     def _try_wrapup(self) -> None:
@@ -665,11 +636,6 @@ class SettingsWindow(QDialog):
         )
         if answer == QMessageBox.StandardButton.Yes:
             self.try_wrapup.emit()
-
-    def refresh_theme(self) -> None:
-        import char_theme
-
-        self.theme_value.setText(char_theme.display_name(self.cfg["char_theme"]))
 
     def _save(self) -> None:
         days = [i for i, chip in enumerate(self.week_buttons) if chip.isChecked()]

@@ -27,25 +27,18 @@ CHAR_BOX = 188.0          # 角色绘制方框边长（素材是正方形）
 CHAR_TOP = 2.0            # 方框在窗口里的顶部 y
 
 IDLE_EXPR = "14_cheek"      # 平常就趴在窗口上托腮
-OFF_IDLE_EXPR = "15_hi"     # 下班后趴在窗口挥手     # 下班后待机就举着手打招呼
 
-ACTION_EXPR = {
-    "hop": ("06_laugh",),
-    "wiggle": ("06_laugh",),
-    "spin": ("04_wink",),
-    "squish": ("04_wink",),
-    "wink": ("04_wink",),
-    "love": ("06_laugh",),
-    "splash": ("04_wink",),
-    "dizzy": ("04_wink",),
-    "annoyed": ("01_angry",),     # 生气只留给连点
-    "wave": ("05_wave",),
-}
+# 久坐提醒：第 1/2/3+ 次分别用不同表情，每次都停 3 秒
+SIT_EXPRS = ("05_wave", "01_angry", "02_confused")
+SIT_HOLD = 3.0
 
-# 长按拎起：按时间依次切帧，最后一个是随机的收尾情绪
-LIFT_DURATION = 2.9
-LIFT_STAGES = ((0.0, 0.72, "19_shock"), (0.72, 1.52, "20_struggle"))
-LIFT_ENDINGS = ("21_blank", "22_dizzy", "23_angry", "24_cry")
+# 待机表情：随时间递进，鼠标移上来打断一次
+IDLE_SOFT_EXPR = "18_lean"     # 5 分钟没人理
+IDLE_LONG_EXPR = "16_nap"      # 20 分钟没人理
+HOVER_EXPR = "17_wow"          # 鼠标移到角色身上
+IDLE_SOFT_AFTER = 300.0        # 5 分钟
+IDLE_LONG_AFTER = 1200.0       # 20 分钟
+HOVER_HOLD = 5.0               # 鼠标停留时显示 5 秒，然后重新开始
 
 MEAL_EARLY = ("31_cook", "32_scoop", "33_serve")     # 开锅 → 盛饭 → 捧碗
 MEAL_LATE = ("34_feast", "35_eat", "36_full")        # 猛吃 → 扒饭 → 吃撑
@@ -63,29 +56,10 @@ DRINK_FRAMES = (
 )
 DRINK_STEP = 0.34      # 每帧停留，六帧约 2 秒
 
-PAT_WINDOW = 2.2       # 摸头反应持续多久
-PAT_REACTIONS = ("26_joy", "27_blush", "28_love")
-
-POKE_LIMIT = 5        # 连点几次才生气
-POKE_WINDOW = 1.6      # 间隔超过这个秒数就重新计数
-
-ACTIONS = ("hop", "wiggle", "spin", "squish", "wink", "love", "splash", "dizzy")
 DURATION = {
     "hop": 0.78,
-    "wiggle": 1.0,
-    "spin": 0.95,
-    "squish": 0.62,
-    "wink": 0.95,
-    "love": 1.5,
-    "splash": 1.25,
-    "dizzy": 1.25,
-    "annoyed": 0.95,
     "wave": 2.6,
-    "recover": 1.9,
-    "stand_up": 0.42,
     "drink": DRINK_STEP * len(DRINK_FRAMES),
-    "lift": LIFT_DURATION,
-    "pat": PAT_WINDOW,
 }
 
 # 个别帧需要整体偏移，免得关键部位被卡片切掉
@@ -94,9 +68,10 @@ EXPR_OFFSET = {
     "08_tumble": -6.0,
 }
 
-# 拖动速度 → 摔倒帧（像素/秒）
-DRAG_SLOW = 420
-DRAG_FAST = 1150
+# 拖动时按时间顺序切帧：小碎步 → 踉跄 → 拖飞
+DRAG_FRAMES = ("07_stumble", "08_tumble", "09_faceplant")
+DRAG_STAGE_STEP = 1.4      # 每张停 1.4 秒
+DRAG_HOLD = 5.0            # 停在拖飞帧 5 秒后，窗口不再动就回待机
 
 
 def _heart_path(size: float) -> QPainterPath:
@@ -132,16 +107,16 @@ class FishState:
         self.action: str | None = None
         self.action_start = 0.0
         self.action_duration = 1.0
-        self.last_click = -10.0
         self.particles: list[Particle] = []
         self.happy = 0.0
-        self.hover = False
 
         self.meal = False
         self.meal_start = 0.0
         self.dragging = False
-        self.drag_speed = 0.0
-        self._clicks: list[float] = []
+        self.drag_t = 0.0
+        self._idle_since = 0.0        # 这轮待机从什么时候开始算
+        self._hover_until = 0.0       # 鼠标停留表情到期时间
+        self._drag_hold_until = 0.0   # 拖飞帧的 5 秒停留到期时间
         self.use_theme(theme_id)
 
     def use_theme(self, theme_id: str) -> None:
@@ -154,7 +129,6 @@ class FishState:
 
         self.action = None             # 播到一半的动作作废，避免帧映射错位
         self.happy = 0.0
-        self._clicks.clear()
         self.particles.clear()
         # dragging 不动：卡片那边 _drag_offset 还在，擅自复位会状态错步
 
@@ -168,41 +142,36 @@ class FishState:
     def tick(self, dt: float) -> None:
         self.t += dt
 
-        if self.action == "pat":
-            elapsed = self.t - self.action_start
-            self.expr = "25_shock" if elapsed < 0.45 else self._pat_expr
-
         if self.action == "drink":
             elapsed = self.t - self.action_start
             index = int(elapsed / DRINK_STEP)
             self.expr = DRINK_FRAMES[min(len(DRINK_FRAMES) - 1, index)]
 
-        if self.action == "lift":
-            elapsed = self.t - self.action_start
-            for start, end, name in LIFT_STAGES:
-                if start <= elapsed < end:
-                    self.expr = name
-                    break
-            else:
-                self.expr = self._lift_ending
-
-        if self.action:
-            if self.t - self.action_start >= self.action_duration:
-                if self.action == "recover":
-                    self.action = "stand_up"
-                    self.action_start = self.t
-                    self.action_duration = DURATION["stand_up"]
-                    self.expr = self.idle_expr
-                else:
-                    self.action = None
-                    if not self.dragging:
-                        self.expr = self.idle_expr
+        if self.action and self.t - self.action_start >= self.action_duration:
+            self.action = None
 
         if self.happy > 0:
             self.happy = max(0.0, self.happy - dt * 1.2)
 
-        if not self.action and not self.dragging:
-            self.expr = self._meal_frame() if self.meal else self.idle_expr
+        # 鼠标停留：显示 5 秒，到点后重新开始一轮待机
+        if self._hover_until:
+            if self.t < self._hover_until:
+                if not self.action and not self.dragging:
+                    self.expr = HOVER_EXPR
+            else:
+                self._hover_until = 0.0
+                self._idle_since = self.t
+
+        # 拖飞帧：窗口停下 5 秒后回待机
+        if self._drag_hold_until and not self.dragging and self.t >= self._drag_hold_until:
+            self._drag_hold_until = 0.0
+            self._idle_since = self.t
+
+        if not self.action and not self.dragging and not self._hover_until:
+            if self._drag_hold_until:
+                self.expr = DRAG_FRAMES[-1]
+            else:
+                self.expr = self._meal_frame() if self.meal else self._idle_frame()
 
         alive: list[Particle] = []
         for p in self.particles:
@@ -220,72 +189,43 @@ class FishState:
             alive.append(p)
         self.particles = alive
 
+    def _idle_frame(self) -> str:
+        """待机表情随时间递进：14 → 18（5 分钟）→ 16（20 分钟）。"""
+        waited = self.t - self._idle_since
+        if waited >= IDLE_LONG_AFTER:
+            return IDLE_LONG_EXPR
+        if waited >= IDLE_SOFT_AFTER:
+            return IDLE_SOFT_EXPR
+        return IDLE_EXPR
+
+    def hover_start(self) -> None:
+        """光标刚移到角色身上：亮一下表情 17，停留 5 秒。"""
+        if self.dragging:
+            return
+        self._hover_until = self.t + HOVER_HOLD
+        self._drag_hold_until = 0.0
+        self.expr = HOVER_EXPR
+
     def set_look(self, dx: float, dy: float) -> None:
         """素材表情固定，保留接口但不再使用。"""
-
-    def set_idle(self, expr: str) -> None:
-        """切换待机表情（下班后换成挥手）。"""
-        if expr == self.idle_expr or expr not in self.frames:
-            return
-        self.idle_expr = expr
-        if not self.action and not self.dragging:
-            self.expr = expr
-
-    # ------------------------------------------------------------ 点击
-
-    def trigger(self) -> bool:
-        if self.dragging:
-            return False
-        if self.t - self.last_click < 0.18:
-            return False
-        self.last_click = self.t
-
-        # 2.5 秒内连点第 5 次才恼
-        if self._clicks and self.t - self._clicks[-1] > POKE_WINDOW:
-            self._clicks = []
-        self._clicks.append(self.t)
-        if len(self._clicks) >= POKE_LIMIT:
-            self._clicks = []
-            self.action = "annoyed"
-            self.action_start = self.t
-            self.action_duration = DURATION["annoyed"]
-            self.expr = "01_angry"
-            self.happy = 0.0
-            return True
-
-        self.action = random.choice(ACTIONS)
-        self.action_start = self.t
-        self.action_duration = DURATION[self.action]
-        self.happy = 1.0
-        self.expr = random.choice(ACTION_EXPR.get(self.action, (self.idle_expr,)))
-
-        if self.action == "love":
-            self._spawn_hearts()
-        elif self.action == "splash":
-            self._spawn_drops()
-        elif self.action == "spin":
-            self._spawn_sparks()
-        return True
 
     # ------------------------------------------------------------ 拖拽
 
     def begin_drag(self) -> None:
         self.dragging = True
-        self.drag_speed = 0.0
+        self.drag_t = 0.0
         self.action = None
-        self.expr = "07_stumble"
+        self._hover_until = 0.0
+        self._drag_hold_until = 0.0
+        self.expr = DRAG_FRAMES[0]
 
     def drag_step(self, dx: float, dy: float, dt: float) -> None:
         if not self.dragging:
             return
-        speed = math.hypot(dx, dy) / max(dt, 0.008)
-        self.drag_speed = self.drag_speed * 0.55 + speed * 0.45
-        if self.drag_speed < DRAG_SLOW:
-            self.expr = "07_stumble"       # 小碎步被拽着走
-        elif self.drag_speed < DRAG_FAST:
-            self.expr = "08_tumble"        # 踉跄
-        else:
-            self.expr = "09_faceplant"     # 直接拖飞
+        # 按拖动时长顺序切帧：小碎步 → 踉跄 → 拖飞，跟手速无关
+        self.drag_t += dt
+        stage = min(len(DRAG_FRAMES) - 1, int(self.drag_t / DRAG_STAGE_STEP))
+        self.expr = DRAG_FRAMES[stage]
 
     def end_drag(self) -> None:
         if not self.dragging:
@@ -293,16 +233,11 @@ class FishState:
         self.meal = False
         self.meal_start = 0.0
         self.dragging = False
-        # 松手时按刚才的拖动速度决定摔成什么样
-        if self.drag_speed < DRAG_SLOW:
-            self.expr = "10_sit"           # 慢慢停下，坐地上
-        elif self.drag_speed < DRAG_FAST:
-            self.expr = "11_hurt_sit"      # 摔懵了
+        # 停在拖飞帧：5 秒内窗口不再动就回待机（拖得短就直接回去）
+        if self.expr == DRAG_FRAMES[-1]:
+            self._drag_hold_until = self.t + DRAG_HOLD
         else:
-            self.expr = "12_cry"           # 摔疼了
-        self.action = "recover"
-        self.action_start = self.t
-        self.action_duration = DURATION["recover"]
+            self._idle_since = self.t
 
     def set_meal(self, active: bool) -> None:
         """午休时段：开始吃饭。"""
@@ -317,27 +252,13 @@ class FishState:
         idx = int((elapsed - MEAL_SWITCH) / MEAL_LATE_STEP) % len(MEAL_LATE)
         return MEAL_LATE[idx]
 
-    def pat(self) -> None:
-        """鼠标碰到形象：被摸头，先一激灵再害羞/开心。"""
-        if self.action not in (None, "pat"):
-            return
-        if self.t - getattr(self, "_last_pat", -10.0) < 0.6:
-            return
-        self._last_pat = self.t
-        self._pat_expr = random.choice(PAT_REACTIONS)
-        self.action = "pat"
+    def sit_remind(self, count: int = 1) -> None:
+        """久坐提醒：第 1 次招手，第 2 次生气，第 3 次之后一脸懵。"""
+        index = max(0, min(len(SIT_EXPRS) - 1, int(count) - 1))
+        self.action = "wave"
         self.action_start = self.t
-        self.action_duration = PAT_WINDOW
-        self.expr = "25_shock"
-
-    def lift(self) -> None:
-        """长按 2 秒：被人拎起来，先炸毛再闹脾气。"""
-        self.action = "lift"
-        self.action_start = self.t
-        self.action_duration = LIFT_DURATION
-        self._lift_ending = random.choice(LIFT_ENDINGS)
-        self.expr = "19_shock"
-        self._clicks = []
+        self.action_duration = SIT_HOLD
+        self.expr = SIT_EXPRS[index]
 
     def react(self, kind: str) -> None:
         """外部事件让角色做个反应：sit=起身提醒，off=下班。"""
@@ -422,14 +343,14 @@ class FishState:
         dy = 0.0
 
         breathe = 1 + 0.014 * math.sin(self.t * 2.0)
-        hover = 1.04 if (self.hover and not self.dragging) else 1.0
+        hover = 1.04 if (self._hover_until and not self.dragging) else 1.0
         sx *= breathe * hover
         sy *= breathe * hover
         dy += 1.6 * math.sin(self.t * 1.6)
 
         if self.dragging:
             # 被拖着走时东倒西歪
-            intensity = min(1.0, self.drag_speed / 900.0)
+            intensity = min(1.0, self.drag_t / (DRAG_STAGE_STEP * 2))
             rot = 7 * intensity * math.sin(self.t * 19)
             dy -= 3 * intensity * abs(math.sin(self.t * 13))
         elif self.action == "hop":
@@ -441,47 +362,8 @@ class FishState:
                 squash = (progress - 0.86) / 0.14
                 sy *= 1 - 0.08 * math.sin(math.pi * squash)
                 sx *= 1 + 0.07 * math.sin(math.pi * squash)
-        elif self.action == "wiggle":
-            rot = 9 * math.sin(progress * math.pi * 4) * (1 - progress)
-        elif self.action == "spin":
-            rot = 360 * (3 * progress * progress - 2 * progress * progress * progress)
-        elif self.action == "squish":
-            squash = math.sin(math.pi * progress)
-            sy *= 1 - 0.18 * squash
-            sx *= 1 + 0.13 * squash
-            dy += 5 * squash
-        elif self.action == "wink":
-            rot = 6 * math.sin(math.pi * progress)
-        elif self.action == "love":
-            sy *= 1 + 0.035 * math.sin(math.pi * progress)
-        elif self.action == "splash":
-            dy -= 5 * math.sin(math.pi * progress)
-        elif self.action == "pat":
-            dy -= 2.2 * math.sin(progress * math.pi)
-            sy *= 1 + 0.025 * math.sin(progress * math.pi * 4)
-        elif self.action == "lift":
-            rise = min(1.0, progress * 3.2)
-            dy -= 28 * rise
-            if 0.25 < progress < 0.53:
-                rot = 8 * math.sin(self.t * 21)      # 挣扎
-            else:
-                rot = 3.5 * math.sin(self.t * 6)     # 被吊着轻晃
-        elif self.action == "annoyed":
-            rot = 5 * math.sin(progress * math.pi * 10) * (1 - progress)
-            dy -= 3 * math.sin(math.pi * progress)
         elif self.action == "wave":
             dy -= 2.5 * abs(math.sin(progress * math.pi * 2))
-        elif self.action == "recover":
-            # 摔在地上先抖一下
-            if progress < 0.35:
-                k = 1 - progress / 0.35
-                rot = 3 * k * math.sin(self.t * 16)
-        elif self.action == "stand_up":
-            # 站起来的小弹跳
-            k = math.sin(math.pi * progress)
-            sy *= 0.9 + 0.1 * k
-            sx *= 1.05 - 0.05 * k
-            dy += 4 * (1 - k)
         elif self.action == "dizzy":
             rot = 7 * math.sin(progress * math.pi * 6) * (1 - progress * 0.5)
 

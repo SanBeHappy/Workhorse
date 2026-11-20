@@ -32,7 +32,7 @@ from config import APP_TITLE
 from engine import OFF, PRE, REST, WORK, Snapshot, fmt_hms
 import char_theme
 from cup import DrinkCup
-from fish import IDLE_EXPR, OFF_IDLE_EXPR, FishState
+from fish import FishState
 import style as style_mod
 from weather import WeatherBadge, WeatherService
 UPDATE_RED = "#FF5A5F"
@@ -590,7 +590,10 @@ class MainCard(QWidget):
         self._drag_offset: QPoint | None = None
         self._dragged = False
         self._hover = False
-        self.fish = FishState(char_theme.resolve(cfg["char_theme"]))
+        self._show_char = bool(cfg["show_character"])
+        self._hovering = False
+        self._char_top = CARD_TOP if self._show_char else 0
+        self.fish = FishState()
         self._build()
         self.adjustSize()
 
@@ -599,14 +602,6 @@ class MainCard(QWidget):
 
         self.weather_service = WeatherService(cfg, self)
         self.weather_service.updated.connect(self.weather.set_weather)
-
-        # 长按 2 秒触发「被拎起来」
-        self._press_at = 0.0
-        self._long_fired = False
-        self._long_timer = QTimer(self)
-        self._long_timer.setSingleShot(True)
-        self._long_timer.setInterval(2000)
-        self._long_timer.timeout.connect(self._on_long_press)
 
         # 小肥鱼的独立节奏，比卡片刷新快
         self._fish_timer = QTimer(self)
@@ -653,17 +648,23 @@ class MainCard(QWidget):
         """像素风要在边框外面画包角和底饰，四周留 12px 余量；玻璃风不留。"""
         return 12 if S().frame else 0
 
+    def _top(self) -> int:
+        """卡片上沿的 y：有角色时让出角色区，没角色时留一圈外边距给包角。"""
+        top = getattr(self, "_char_top", CARD_TOP)
+        return top if top else self._frame_margin()
+
     def _apply_size(self) -> None:
         m = self._frame_margin()
-        self.setFixedSize(304 + 2 * m, CARD_TOP + self._card_height() + m)
+        top = self._top()
+        self.setFixedSize(304 + 2 * m, top + self._card_height() + m)
         root = getattr(self, "_root", None)
         if root is not None:
-            root.setContentsMargins(18 + m, CARD_TOP + 13, 14 + m, 15 + m)
+            root.setContentsMargins(18 + m, top + 13, 14 + m, 15 + m)
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
         m = self._frame_margin()
-        root.setContentsMargins(18 + m, CARD_TOP + 13, 14 + m, 15 + m)
+        root.setContentsMargins(18 + m, self._top() + 13, 14 + m, 15 + m)
         self._root = root
         root.setSpacing(0)
 
@@ -780,6 +781,23 @@ class MainCard(QWidget):
         super().resizeEvent(event)
         self._place_cup()
 
+    def set_character_visible(self, visible: bool) -> None:
+        """菜单里的「显示角色」：关掉就收起角色区，只留卡片。"""
+        visible = bool(visible)
+        if visible == self._show_char:
+            return
+        self._show_char = visible
+        self._char_top = CARD_TOP if visible else 0
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        bottom = self.y() + self.height()
+        self._apply_size()
+        if self.layout() is not None:
+            self.layout().activate()  # 先让布局算完，杯子位置才准
+        self.move(self.x(), bottom - self.height())
+        self._clamp_to_screen()
+        self._place_cup()
+        self.update()
+
     def apply_theme(self, theme_id: str) -> None:
         """运行中换主题：重载帧集 + 立刻按当前时段校正待机/吃饭表情。"""
         self.fish.use_theme(theme_id)
@@ -787,7 +805,6 @@ class MainCard(QWidget):
         self.update()
 
     def refresh(self, snap: Snapshot, pulse: float = 1.0) -> None:
-        self.fish.set_idle(OFF_IDLE_EXPR if snap.phase == OFF else IDLE_EXPR)
         self.fish.set_meal(self.engine.in_lunch(snap.now))
         now = snap.now
         weekday = WEEKDAY_CN[now.weekday()]
@@ -884,7 +901,7 @@ class MainCard(QWidget):
             return
         area = screen.availableGeometry()
         x = min(max(self.x(), area.left() - 60), area.right() - self.width() + 60)
-        y = min(max(self.y(), area.top() - CARD_TOP + 30), area.bottom() - self.height() + 40)
+        y = min(max(self.y(), area.top() - self._top() + 30), area.bottom() - self.height() + 40)
         self.move(x, y)
 
     def remember_position(self) -> None:
@@ -909,12 +926,14 @@ class MainCard(QWidget):
         self.sit_hearts.setVisible(st.hearts)
         self.day_bar.update()
         self.sit_bar.update()
-        target_h = CARD_TOP + self._card_height() + self._frame_margin()
+        target_h = self._top() + self._card_height() + self._frame_margin()
         target_w = 304 + 2 * self._frame_margin()
         if self.height() != target_h or self.width() != target_w:
             # 以底边为锚点改高度：卡片一般贴在屏幕右下角，往下长会顶出屏幕
             bottom = self.y() + self.height()
             self._apply_size()
+            if self.layout() is not None:
+                self.layout().activate()
             self.move(self.x(), bottom - target_h)
             self._clamp_to_screen()
             self._place_cup()
@@ -1041,13 +1060,14 @@ class MainCard(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         # 1. 先画小肥鱼（她会被下面的卡片挡住下半身）
-        self.fish.draw(painter, self.width() / 2, 0)
+        if getattr(self, "_show_char", True):
+            self.fish.draw(painter, self.width() / 2, 0)
 
         # 2. 再画卡片，盖住鱼的下半身
         st = S()
         m = self._frame_margin()
         rect = QRectF(
-            m + 0.5, CARD_TOP + 0.5, self.width() - 2 * m - 1, self._card_height() - 1
+            m + 0.5, self._top() + 0.5, self.width() - 2 * m - 1, self._card_height() - 1
         )
         painter.setBrush(QColor(st.bg))
         if st.frame:
@@ -1060,28 +1080,32 @@ class MainCard(QWidget):
         self.cup.paint(painter)
 
     def _on_fish_tick(self) -> None:
+        if not getattr(self, "_show_char", True):
+            return
         self.fish.tick(0.033)
         cursor = self.mapFromGlobal(QCursor.pos())
         self.fish.set_look(
             (cursor.x() - self.width() / 2) / 90.0, (cursor.y() - FISH_CY) / 90.0
         )
         hovering = self._in_fish(cursor)
-        if hovering and not self.fish.hover:
-            self.fish.pat()          # 鼠标碰到形象就摸头
-        self.fish.hover = hovering
-        if self.fish.hover:
+        if hovering and not self._hovering:
+            self.fish.hover_start()  # 光标刚到角色身上：亮一下表情 17
+        self._hovering = hovering
+        if hovering:
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
             self.unsetCursor()
         self.cup.tick(0.033)
-        area = QRect(0, 0, self.width(), CARD_TOP)
+        area = QRect(0, 0, self.width(), self._top())
         if self.cup.bobbing():
             # 满水时杯子上下浮动，绘制会超出 rect 几个像素，重绘区域留点余量
             area = area.united(self.cup.rect().adjusted(-2, -4, 2, 4))
         self.update(area)
 
     def _in_fish(self, pos: QPoint) -> bool:
-        if pos.y() > CARD_TOP - 4:
+        if not getattr(self, "_show_char", True):
+            return False
+        if pos.y() > self._top() - 4:
             return False
         dx = (pos.x() - self.width() / 2) / 86.0
         dy = (pos.y() - FISH_CY) / 86.0
@@ -1112,13 +1136,6 @@ class MainCard(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() != Qt.MouseButton.LeftButton:
             return
-        pos = event.position().toPoint()
-        if self._in_fish(pos):
-            self._press_at = time.monotonic()
-            self._long_fired = False
-            self._long_timer.start()
-            event.accept()
-            return
         self._drag_offset = (
             event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         )
@@ -1144,18 +1161,7 @@ class MainCard(QWidget):
             self.fish.drag_step(dx, dy, dt)
             event.accept()
 
-    def _on_long_press(self) -> None:
-        self._long_fired = True
-        self.fish.lift()
-
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if self._long_timer.isActive():
-            self._long_timer.stop()
-            held = time.monotonic() - self._press_at
-            # 短按才算点击；按住超过 0.45 秒松手不触发，避免长按半途松开的误触
-            if not self._long_fired and held < 0.45:
-                self.fish.trigger()
-            self._long_fired = False
         if self._drag_offset is not None:
             was_dragged = self._dragged
             self._drag_offset = None
