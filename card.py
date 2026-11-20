@@ -20,6 +20,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QSpacerItem,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -603,6 +604,8 @@ class MainCard(QWidget):
         self.weather_service = WeatherService(cfg, self)
         self.weather_service.updated.connect(self.weather.set_weather)
 
+        self._align_head(S().pixel_font)
+
         # 小肥鱼的独立节奏，比卡片刷新快
         self._fish_timer = QTimer(self)
         self._fish_timer.setInterval(33)
@@ -610,6 +613,20 @@ class MainCard(QWidget):
         self._fish_timer.start()
 
     # ------------------------------------------------------------ 构建
+
+    def _align_head(self, pixel: bool) -> None:
+        """像素风藏掉日期前的小圆点，让「周几」和下面几行同一个左边缘。"""
+        if getattr(self, "dot", None) is not None:
+            self.dot.setVisible(not pixel)
+        if getattr(self, "_head", None) is not None:
+            self._head.setSpacing(0 if pixel else 7)
+        if getattr(self, "_head_gap", None) is not None:
+            self._head_gap.changeSize(
+                0 if pixel else 1,
+                0,
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Minimum,
+            )
 
     def _caption_font(self) -> QFont:
         return pixel_text_font(14) if S().pixel_font else ui_font(12)
@@ -671,6 +688,7 @@ class MainCard(QWidget):
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(7)
+        self._head = head
         self.dot = Dot(self)
         self.date_label = QLabel("—")
         self.date_label.setFont(ui_font(12))
@@ -678,7 +696,10 @@ class MainCard(QWidget):
         self.more_btn = DotsButton(self)
         self.more_btn.clicked.connect(self._emit_menu)
         head.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
-        head.addSpacing(1)
+        self._head_gap = QSpacerItem(
+            1, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum
+        )
+        head.addItem(self._head_gap)
         head.addWidget(self.date_label, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addStretch(1)
         self.update_badge = UpdateBadge(self)
