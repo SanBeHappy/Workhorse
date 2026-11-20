@@ -670,18 +670,24 @@ class MainCard(QWidget):
         top = getattr(self, "_char_top", CARD_TOP)
         return top if top else self._frame_margin()
 
+    def _content_left(self, m: int | None = None) -> int:
+        """内容区左边距：像素风的金属边框更厚，文字再往右让 8px 才不显贴边。"""
+        if m is None:
+            m = self._frame_margin()
+        return 18 + m + (8 if S().pixel_font else 0)
+
     def _apply_size(self) -> None:
         m = self._frame_margin()
         top = self._top()
         self.setFixedSize(304 + 2 * m, top + self._card_height() + m)
         root = getattr(self, "_root", None)
         if root is not None:
-            root.setContentsMargins(18 + m, top + 13, 14 + m, 15 + m)
+            root.setContentsMargins(self._content_left(m), top + 13, 14 + m, 15 + m)
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
         m = self._frame_margin()
-        root.setContentsMargins(18 + m, self._top() + 13, 14 + m, 15 + m)
+        root.setContentsMargins(self._content_left(m), self._top() + 13, 14 + m, 15 + m)
         self._root = root
         root.setSpacing(0)
 
