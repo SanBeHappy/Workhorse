@@ -640,16 +640,8 @@ class SettingsWindow(QDialog):
         self.update()
 
     def _test_shutdown(self) -> None:
-        answer = QMessageBox.question(
-            self,
-            "测试自动关机",
-            "会真的执行关机：60 秒后系统关闭，期间可以点「取消关机」撤销。\n"
-            "请先保存好手头的东西再测。\n\n现在测试吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self.test_shutdown.emit()
+        # 不给二次确认：点了就是真关，3 秒后执行
+        self.test_shutdown.emit()
 
     def _try_wrapup(self) -> None:
         answer = QMessageBox.question(

@@ -47,23 +47,95 @@ def _no_window() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 
-def _initiate_shutdown(seconds: int) -> tuple[bool, str]:
-    """用 InitiateShutdownW 直接下达关机，不经过 shutdown.exe 的关机原因对话框。
+def _enable_shutdown_privilege() -> bool:
+    """把当前进程的 SeShutdownPrivilege 打开。
 
-    shutdown.exe 带 /d p:0:0 时，某些机器（组策略要求填写关机原因、或有多用户登录）
-    会弹出「关闭 Windows / 注销」的选择框等用户点确认，窗口一被关掉关机就没了，
-    而命令本身早就返回 0，日志里就变成了「成功但没关」。
-    API 调用把原因直接写进参数，系统不会再弹框。
+    普通用户令牌里这个特权默认是「禁用」状态，不显式启用的话
+    InitiateShutdown 一律返回 5（拒绝访问），程序就只能退回 shutdown.exe——
+    而 shutdown.exe 会弹「即将注销你的登录」那个确认框，用户一关掉关机就没了。
     """
     import ctypes
     from ctypes import wintypes
 
-    try:
-        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
-        func = advapi.InitiateShutdownW
-    except Exception as exc:  # noqa: BLE001
-        return False, f"advapi32 不可用：{exc}"
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 
+    class LUID(ctypes.Structure):
+        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+    class LUID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Luid", LUID), ("Attributes", wintypes.DWORD)]
+
+    class TOKEN_PRIVILEGES(ctypes.Structure):
+        _fields_ = [
+            ("PrivilegeCount", wintypes.DWORD),
+            ("Privileges", LUID_AND_ATTRIBUTES * 1),
+        ]
+
+    TOKEN_ADJUST_PRIVILEGES = 0x0020
+    TOKEN_QUERY = 0x0008
+    SE_PRIVILEGE_ENABLED = 0x0002
+
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    adv.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    adv.LookupPrivilegeValueW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(LUID),
+    ]
+    adv.AdjustTokenPrivileges.argtypes = [
+        wintypes.HANDLE,
+        wintypes.BOOL,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+
+    token = wintypes.HANDLE()
+    if not adv.OpenProcessToken(
+        kernel.GetCurrentProcess(),
+        TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+        ctypes.byref(token),
+    ):
+        return False
+    try:
+        luid = LUID()
+        if not adv.LookupPrivilegeValueW(
+            None, "SeShutdownPrivilege", ctypes.byref(luid)
+        ):
+            return False
+        privileges = TOKEN_PRIVILEGES(
+            1,
+            (LUID_AND_ATTRIBUTES * 1)(LUID_AND_ATTRIBUTES(luid, SE_PRIVILEGE_ENABLED)),
+        )
+        if not adv.AdjustTokenPrivileges(
+            token, False, ctypes.byref(privileges), 0, None, None
+        ):
+            return False
+        return ctypes.get_last_error() == 0
+    finally:
+        kernel.CloseHandle(token)
+
+
+def _initiate_shutdown(seconds: int) -> tuple[bool, str]:
+    """用 InitiateShutdownW 下达关机，不经过任何系统确认框。
+
+    比 shutdown.exe 靠谱的地方：原因直接作为参数传进去，不弹「即将注销你的登录」，
+    而且返回的是真实错误码，不会再出现「日志写着成功、机器没关」。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    if not _enable_shutdown_privilege():
+        return False, "没能启用关机特权（SeShutdownPrivilege）"
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    func = advapi.InitiateShutdownW
     func.argtypes = [
         wintypes.LPCWSTR,   # lpMachineName
         wintypes.LPCWSTR,   # lpMessage
@@ -97,41 +169,16 @@ def _initiate_shutdown(seconds: int) -> tuple[bool, str]:
 
 
 def perform_shutdown(seconds: int = 30) -> tuple[bool, str]:
-    """真正执行关机；带 30 秒缓冲，这段时间里 shutdown /a 还能取消。
+    """真正执行关机。
 
-    先走 Win32 API（不会弹关机原因框），失败再退回 shutdown.exe；
-    两条路都可能被系统策略拦下，所以返回值只在系统明确受理时才是 True。
+    只用 Win32 API：shutdown.exe 在部分机器上会弹「即将注销你的登录」确认框，
+    用户一关掉就等于取消，所以干脆不走它。
     """
     if os.environ.get(ENV_DRY_RUN):
         return False, "dry-run（DESKMATE_NO_SHUTDOWN 已设置，没有真的关机）"
     if sys.platform != "win32":
         return False, "只支持 Windows"
-
-    ok, msg = _initiate_shutdown(seconds)
-    if ok:
-        return True, msg
-
-    try:
-        proc = subprocess.run(
-            [
-                "shutdown",
-                "/s",
-                "/f",
-                "/t",
-                str(int(seconds)),
-                "/c",
-                COMMENT,
-            ],
-            capture_output=True,
-            creationflags=_no_window(),
-            timeout=10,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"{msg}；调用 shutdown 也失败：{exc}"
-    if proc.returncode == 0:
-        return True, f"{seconds} 秒后关机（走 shutdown.exe）"
-    detail = (proc.stderr or proc.stdout or b"").decode("mbcs", "ignore").strip()
-    return False, f"{msg}；shutdown.exe：{detail or proc.returncode}"
+    return _initiate_shutdown(seconds)
 
 
 def cancel_pending() -> bool:

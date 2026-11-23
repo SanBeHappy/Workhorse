@@ -37,7 +37,6 @@ from toast import (
     ToastManager,
     show_off_again,
     show_shutdown,
-    show_shutdown_test,
     show_off_work,
     show_pre_off,
     show_sit,
@@ -500,10 +499,10 @@ class DeskMate:
         log(f"下班收尾·关屏：{detail}")
 
     def test_shutdown_flow(self) -> None:
-        """测试自动关机：真的调用关机，留 60 秒可以取消。"""
+        """测试自动关机：点了就真关，3 秒后执行，不弹任何确认框。"""
         from shutdown import perform_shutdown
 
-        seconds = 60
+        seconds = 3
         ok, msg = perform_shutdown(seconds=seconds)
         log(f"关机测试：{msg}" + ("（成功）" if ok else "（未执行）"))
         if not ok:
@@ -515,8 +514,6 @@ class DeskMate:
                 self.on_toast_action,
                 auto_close_ms=0,
             )
-            return
-        show_shutdown_test(self.toasts, seconds, self.on_toast_action)
 
     def _check_shutdown(self, now: datetime) -> None:
         """到点自动关机：提前 5 分钟弹提醒，到点执行。"""
