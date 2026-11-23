@@ -223,6 +223,7 @@ class SettingsWindow(QDialog):
     saved = Signal()
     weather_changed = Signal()
     try_wrapup = Signal()
+    test_shutdown = Signal()
     card_style_changed = Signal(str)
 
     def __init__(self, cfg, parent: QWidget | None = None) -> None:
