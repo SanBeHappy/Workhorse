@@ -277,13 +277,13 @@ class Engine:
         # ---- 喝水 ----
         # 只跟「工作时段」有关，不看久坐开关，也不受「暂停久坐提醒」影响
         drink_active = workday and start_dt <= now < off_dt and not lunch
+        interval = max(MIN_DRINK_INTERVAL, int(self.cfg["drink_interval"] or 30))
         drink_state = "empty"
         drink_left = 0
         drink_ratio = 0.0
         cups = int(self.cfg["drink_cups"] or 0)
         if str(self.cfg["drink_cups_date"] or "") != now.date().isoformat():
             cups = 0
-        interval = max(MIN_DRINK_INTERVAL, int(self.cfg["drink_interval"] or 30))
         if self.cfg["drink_enabled"] and drink_active:
             # 刚回到工作时段（上班、午休结束）：重新起算，别把休息时间算进去
             if self._drink_prev_active is not True:
@@ -518,6 +518,7 @@ class Engine:
         # ---- 喝水 ----
         # 只跟「工作时段」有关，不看久坐开关，也不受「暂停久坐提醒」影响
         drink_active = workday and start_dt <= now < off_dt and not lunch
+        interval = max(MIN_DRINK_INTERVAL, int(self.cfg["drink_interval"] or 30))
         drink_state = "empty"
         drink_left = 0
         drink_ratio = 0.0

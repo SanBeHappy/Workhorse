@@ -70,6 +70,25 @@ def main() -> int:
 
     check("角色显示开关", toggle_character)
 
+    def engine_day_sweep() -> None:
+        """把一天里几个关键时点都跑一遍，抓 drink_ratio 这类只在特定时段才炸的错。"""
+        from datetime import datetime
+
+        from config import Config
+        from engine import Engine
+
+        for enabled in (True, False):
+            cfg = Config()
+            cfg["drink_enabled"] = enabled
+            cfg["shutdown_enabled"] = False
+            engine = Engine(cfg)
+            for hour in (8, 9, 10, 12, 13, 14, 18, 21, 23):
+                engine.tick(
+                    datetime.now().replace(hour=hour, minute=0, second=0, microsecond=0)
+                )
+
+    check("引擎整天走时", engine_day_sweep)
+
     def shutdown_api() -> None:
         import shutdown
 
