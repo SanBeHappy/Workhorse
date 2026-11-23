@@ -250,6 +250,7 @@ class DeskMate:
         self.settings_window.weather_changed.connect(self.refresh_weather)
         self.settings_window.try_wrapup.connect(self.run_wrapup)
         self.settings_window.card_style_changed.connect(self.apply_style)
+        self.settings_window.test_shutdown.connect(self.test_shutdown_flow)
         self.settings_window.show()
         self.settings_window.setWindowIcon(app_icon())
         self._center_settings()
@@ -496,6 +497,27 @@ class DeskMate:
         except Exception as exc:  # noqa: BLE001
             ok, detail = False, f"异常：{exc}"
         log(f"下班收尾·关屏：{detail}")
+
+    def test_shutdown_flow(self) -> None:
+        """测试自动关机：走一遍关机命令（dry-run）+ 弹真实提醒，不写跳过记录。"""
+        from shutdown import ENV_DRY_RUN, perform_shutdown
+
+        os.environ[ENV_DRY_RUN] = "1"
+        try:
+            _ok, msg = perform_shutdown(seconds=30)
+        finally:
+            os.environ.pop(ENV_DRY_RUN, None)
+        log(f"关机测试：{msg}")
+        show_shutdown(
+            self.toasts,
+            WARN_BEFORE // 60,
+            self._test_toast_action,
+            note=f"测试模式：关机命令已模拟（{msg}），不会真的关机。",
+        )
+
+    def _test_toast_action(self, key: str) -> None:
+        # 测试时点「今晚不关」不写跳过记录，免得影响真正的关机
+        log(f"关机测试提醒：点了 {key}")
 
     def _check_shutdown(self, now: datetime) -> None:
         """到点自动关机：提前 5 分钟弹提醒，到点执行。"""

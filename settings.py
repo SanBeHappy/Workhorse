@@ -416,6 +416,18 @@ class SettingsWindow(QDialog):
         body.addWidget(
             self._hint("关机前 5 分钟会提醒一次，那时可以选「今晚不关」")
         )
+        body.addSpacing(9)
+        test_row = QHBoxLayout()
+        test_row.setContentsMargins(0, 0, 0, 0)
+        test_row.setSpacing(8)
+        self.shutdown_test = QPushButton("测试")
+        self.shutdown_test.setObjectName("mini")
+        self.shutdown_test.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.shutdown_test.setFixedSize(64, 28)
+        self.shutdown_test.clicked.connect(self._test_shutdown)
+        test_row.addWidget(self.shutdown_test)
+        test_row.addStretch(1)
+        body.addLayout(test_row)
         body.addSpacing(14)
         body.addWidget(self._divider())
         body.addSpacing(10)
@@ -625,6 +637,19 @@ class SettingsWindow(QDialog):
         st = style_mod.current()
         self.setStyleSheet(style_mod.base_qss() + style_mod.settings_qss())
         self.update()
+
+    def _test_shutdown(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "测试关机提醒",
+            "会立刻弹一次「5 分钟后自动关机」的提醒，并把关机命令走一遍。\n"
+            "测试模式不会真的关机，也不会写「今晚不关」的跳过记录。\n\n"
+            "刚改过设置的话，建议先点保存再测试。现在测试吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.test_shutdown.emit()
 
     def _try_wrapup(self) -> None:
         answer = QMessageBox.question(
