@@ -1130,6 +1130,18 @@ class MainCard(QWidget):
         else:
             self.unsetCursor()
         self.cup.tick(0.033)
+        # 光标停在水杯上时给个口径：能看到计时到底有没有在走
+        snap = self.engine.snapshot
+        if self.cup.rect().contains(cursor):
+            if not self.cfg["drink_enabled"]:
+                self.setToolTip("喝水提醒：已关闭")
+            else:
+                self.setToolTip(
+                    f"距上次喝水 {snap.drink_elapsed} 分钟 · 间隔 {snap.drink_interval} 分钟"
+                    f" · 今天 {snap.drink_cups} 杯"
+                )
+        elif self.toolTip():
+            self.setToolTip("")
         area = QRect(0, 0, self.width(), self._top())
         if self.cup.bobbing():
             # 满水时杯子上下浮动，绘制会超出 rect 几个像素，重绘区域留点余量

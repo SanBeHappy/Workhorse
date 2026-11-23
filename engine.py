@@ -46,6 +46,8 @@ class Snapshot:
     drink_cups: int = 0          # 今天喝了几杯
     drink_left: int = 0          # 距下次喝水还有几分钟
     drink_ratio: float = 0.0     # 0~1，用来挑杯子素材
+    drink_elapsed: int = 0       # 距上次喝水过了几分钟（午休时是冻结值）
+    drink_interval: int = 30     # 当前设置的间隔，分钟
 
 
 @dataclass
@@ -71,12 +73,256 @@ class Engine:
         self.drink_start = datetime.now()
         self.drink_alerts = 0
         self.drink_last_alert = None
+        self._drink_prev_active: bool | None = None
+        self._drink_frozen = 0.0      # 午休/下班时冻结的水位，别显示成空杯
+        self._drink_frozen_left = 0
         self.sit_start = datetime.now()
         self.sit_alerts = 0
         self.sit_last_alert: Optional[datetime] = None
         self.sit_alert_gap = max(3, int(cfg["sit_snooze"] or 5))
         self.pause_until: Optional[datetime] = None
         self.off_again_at: Optional[datetime] = None
+        self.snapshot = Snapshot()
+
+    # ------------------------------------------------------------ 对外动作
+
+    def stand_up(self) -> None:
+        """用户表示已经起身，重新计时。"""
+        self.sit_start = datetime.now()
+        self.sit_alerts = 0
+        self.sit_last_alert = None
+
+    @staticmethod
+    def _is_month_last_workday(now: datetime, work_days: list[int]) -> bool:
+        """今天是不是本月最后一个工作日（后面没有工作日了）。"""
+        import calendar
+
+        last_day = calendar.monthrange(now.year, now.month)[1]
+        for day in range(last_day, now.day - 1, -1):
+            candidate = now.replace(day=day).date()
+            if candidate.weekday() in work_days:
+                return candidate == now.date()
+        return False
+
+    def mark_report_done(self) -> None:
+        """点了「写过了」：今天不再提醒（写进配置，重启也不提醒）。"""
+        self.cfg["report_done_date"] = datetime.now().date().isoformat()
+        self.cfg.save()
+
+    def reset_drink(self) -> None:
+        """手动把喝水计时归零，不记杯数（菜单里的「喝水重置」用）。"""
+        self.drink_start = datetime.now()
+        self.drink_alerts = 0
+        self.drink_last_alert = None
+
+    def snooze_drink(self, minutes: int = 10) -> None:
+        """「10 分钟后」：用户有响应，本轮计数清零，到点再催一次。"""
+        self.drink_last_alert = datetime.now() - timedelta(
+            minutes=max(0, DRINK_ALERT_GAP - max(1, minutes))
+        )
+        self.drink_alerts = 0
+
+    def drink_done(self) -> None:
+        """点了水杯：记一杯，从头计时。"""
+        self.drink_start = datetime.now()
+        self.drink_alerts = 0
+        self.drink_last_alert = None
+        today = datetime.now().date().isoformat()
+        cups = int(self.cfg["drink_cups"] or 0)
+        if str(self.cfg["drink_cups_date"] or "") != today:
+            cups = 0
+        self.cfg["drink_cups"] = cups + 1
+        self.cfg["drink_cups_date"] = today
+        self.cfg.save()
+
+    def snooze_report(self, minutes: int = 10) -> None:
+        """周报提醒「10 分钟后」：到点再催一次。"""
+        self.report_again_at = datetime.now() + timedelta(minutes=max(1, minutes))
+
+    def snooze_sit(self) -> None:
+        """稍后再说：不休止计时，只是延后下一次打扰。"""
+        minutes = max(1, int(self.cfg["sit_snooze"] or 5))
+        self.sit_last_alert = datetime.now()
+        self.sit_alert_gap = minutes
+        if self.sit_alerts >= 3:
+            self.sit_alerts = 1
+
+    def pause_sit(self, minutes: int = 30) -> None:
+        self.pause_until = datetime.now() + timedelta(minutes=minutes)
+        self.sit_start = self.pause_until
+        self.sit_alerts = 0
+        self.sit_last_alert = None
+
+    def resume_sit(self) -> None:
+        self.pause_until = None
+        self.stand_up()
+
+    def snooze_off(self, minutes: int = 10) -> None:
+        self.off_again_at = datetime.now() + timedelta(minutes=minutes)
+
+    # ------------------------------------------------------------ 主循环
+
+    def tick(self, now: datetime) -> List[Event]:
+        events: List[Event] = []
+
+        if self._day != now.date():
+            self._day = now.date()
+            self.sit_start = now
+            self.sit_alerts = 0
+            self.sit_last_alert = None
+            self.off_again_at = None
+
+        prev = self._last
+        self._last = now
+
+        workday = now.weekday() in (self.cfg["work_days"] or [])
+        off_t = parse_time(self.cfg["off_work"], "18:00")
+        start_t = parse_time(self.cfg["start_work"], "09:30")
+        off_dt = datetime.combine(now.date(), off_t)
+        start_dt = datetime.combine(now.date(), start_t)
+        pre_min = max(0, int(self.cfg["pre_alert_min"] or 0))
+
+        # ---- 下班提醒 ----
+        if workday:
+            pre_dt = off_dt - timedelta(minutes=pre_min)
+            if pre_min and prev < pre_dt <= now and now < off_dt:
+                events.append(Event("pre_off", minutes=pre_min))
+            if prev < off_dt <= now:
+                events.append(Event("off_work"))
+
+        if self.off_again_at and now >= self.off_again_at:
+            self.off_again_at = None
+            events.append(Event("off_again"))
+
+        if self.report_again_at and now >= self.report_again_at:
+            self.report_again_at = None
+            events.append(Event("weekly_report"))
+
+        # 本周最后一个工作日到点提醒写周报
+        report_due = False
+        if workday and self.cfg["weekly_report_enabled"]:
+            days = list(self.cfg["work_days"] or [])
+            at = parse_time(self.cfg["weekly_report_time"], "17:40")
+            trigger = now.replace(hour=at.hour, minute=at.minute, second=0, microsecond=0)
+            if days and now.weekday() == max(days):
+                report_due = now >= trigger
+                # 过了提醒时间就补一次（包括 17:40 之后才开机的场景）
+                done_today = self.cfg["report_done_date"] == now.date().isoformat()
+                if now >= trigger and not done_today and self._report_day != now.date():
+                    self._report_day = now.date()
+                    monthly = self._is_month_last_workday(now, days)
+                    events.append(Event("weekly_report", monthly=monthly))
+
+        # ---- 阶段判定 ----
+        if not workday:
+            phase = REST
+        elif now >= off_dt:
+            phase = OFF
+        elif pre_min and now >= off_dt - timedelta(minutes=pre_min):
+            phase = PRE
+        else:
+            phase = WORK
+
+        span = (off_dt - start_dt).total_seconds() or 1.0
+        progress = (now - start_dt).total_seconds() / span
+
+        # ---- 久坐计时 ----
+        paused = bool(self.pause_until and now < self.pause_until)
+        if self.pause_until and not paused:
+            self.pause_until = None
+
+        lunch = self._in_lunch(now)
+        if not workday:
+            sit_reason = "rest"
+        elif now < start_dt:
+            sit_reason = "before"      # 还没到上班时间，不计时
+        elif now >= off_dt:
+            sit_reason = "after"       # 已经下班，不计时
+        elif not self.cfg["sit_enabled"]:
+            sit_reason = "off"
+        elif paused:
+            sit_reason = "paused"
+        elif lunch:
+            sit_reason = "lunch"
+        else:
+            sit_reason = "ok"
+
+        sit_active = sit_reason == "ok"
+
+        if not sit_active:
+            self.sit_start = now
+            self.sit_alerts = 0
+            self.sit_last_alert = None
+            sit_minutes = 0.0
+        else:
+            sit_minutes = max(0.0, (now - self.sit_start).total_seconds() / 60.0)
+            target = max(5, int(self.cfg["sit_interval"] or 45))
+            # 前三次按用户选择的间隔催，之后拉长到 30 分钟一次，最多七次
+            if self.sit_alerts < 3:
+                gap = max(3, int(getattr(self, "sit_alert_gap", self.cfg["sit_snooze"] or 5)))
+            else:
+                gap = 30
+            if sit_minutes >= target and self.sit_alerts < 7:
+                due = (
+                    self.sit_last_alert is None
+                    or (now - self.sit_last_alert) >= timedelta(minutes=gap)
+                )
+                if due:
+                    self.sit_last_alert = now
+                    self.sit_alerts += 1
+                    events.append(
+                        Event("sit", minutes=int(sit_minutes), hard=self.sit_alerts >= 3)
+                    )
+
+        # ---- 喝水 ----
+        # 只跟「工作时段」有关，不看久坐开关，也不受「暂停久坐提醒」影响
+        drink_active = workday and start_dt <= now < off_dt and not lunch
+        drink_state = "empty"
+        drink_left = 0
+        drink_ratio = 0.0
+        cups = int(self.cfg["drink_cups"] or 0)
+        if str(self.cfg["drink_cups_date"] or "") != now.date().isoformat():
+            cups = 0
+        interval = max(MIN_DRINK_INTERVAL, int(self.cfg["drink_interval"] or 30))
+        if self.cfg["drink_enabled"] and drink_active:
+            # 刚回到工作时段（上班、午休结束）：重新起算，别把休息时间算进去
+            if self._drink_prev_active is not True:
+                self.drink_start = now
+                self.drink_alerts = 0
+                self.drink_last_alert = None
+            self._drink_prev_active = True
+
+            elapsed = max(0.0, (now - self.drink_start).total_seconds() / 60.0)
+            ratio = elapsed / interval
+            drink_left = max(0, int(round(interval - elapsed)))
+            drink_ratio = min(1.0, max(0.0, ratio))
+            if ratio >= 1.0:
+                drink_state = "full"
+                due = (
+                    self.drink_last_alert is None
+                    or (now - self.drink_last_alert).total_seconds() >= DRINK_ALERT_GAP * 60
+                )
+                if due:
+                    if self.drink_alerts < DRINK_MAX_ALERTS:
+                        self.drink_alerts += 1
+                        self.drink_last_alert = now
+                        events.append(Event("drink"))
+                    else:
+                        # 催了三次还是没喝，当作这次漏掉，重新起一轮，别一直卡在满水
+                        self.drink_start = now
+                        self.drink_alerts = 0
+                        self.drink_last_alert = None
+            elif ratio >= 0.75:
+                drink_state = "half"
+            self._drink_frozen = drink_ratio
+            self._drink_frozen_left = max(0, int(round(interval - elapsed)))
+        else:
+            # 午休 / 下班 / 关了提醒：水位停在离开时的样子，不归零
+            self._drink_prev_active = False
+            drink_ratio = self._drink_frozen
+            drink_left = self._drink_frozen_left
+            drink_state = "full" if drink_ratio >= 1.0 else ("half" if drink_ratio >= 0.75 else "empty")
+
         self.snapshot = Snapshot()
 
     # ------------------------------------------------------------ 对外动作
@@ -323,6 +569,10 @@ class Engine:
             drink_cups=cups,
             drink_left=drink_left,
             drink_ratio=drink_ratio,
+            drink_elapsed=(
+                max(0, interval - drink_left) if drink_ratio > 0 else 0
+            ),
+            drink_interval=interval,
         )
         return events
 
