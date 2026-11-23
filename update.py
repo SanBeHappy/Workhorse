@@ -589,6 +589,13 @@ def apply_update(
         return False, "更新包不是有效的压缩文件", None
 
     app_dir = exe.parent
+    if not app_dir.exists():
+        # 运行期间目录被改名/移动了，sys.executable 还是老路径，换目录必然失败
+        return (
+            False,
+            f"程序目录已不在原位置（{app_dir}）。如果刚改过文件夹名，请先重启 DeskMate 再更新",
+            None,
+        )
 
     # 关键：解压到「和程序目录同一块盘」的兄弟目录里。
     # 放 %TEMP% 的话，旧盘到系统盘是两个卷，move 目录会退化成整份复制，

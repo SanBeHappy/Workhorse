@@ -27,7 +27,7 @@ import feishu
 import update
 import wrapup
 from card import MainCard
-from config import APP_TITLE, APP_VERSION, Config
+from config import APP_TITLE, APP_VERSION, Config, repair_autostart
 from engine import Engine, parse_time
 from settings import SettingsWindow
 from shutdown import ShutdownScheduler, WARN_BEFORE
@@ -102,6 +102,11 @@ class DeskMate:
         style_mod.set_current(self.cfg["card_style"])
         self.app.setFont(ui_font(12))
         cup.set_logger(log)
+        # 装有开机自启的用户如果把文件夹改名了，注册表还指着老路径，开机就不启动
+        fixed = repair_autostart()
+        if fixed:
+            log(f"开机自启路径已修正：{fixed}")
+        log(f"启动 v{APP_VERSION} · 安装目录 {Path(sys.executable).resolve().parent}")
         self.engine = Engine(self.cfg)
         self.shutdown = ShutdownScheduler(self.cfg)
         self._wrapup_date = ""

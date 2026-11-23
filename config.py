@@ -140,6 +140,37 @@ def set_autostart(enabled: bool) -> bool:
         return False
 
 
+def autostart_command() -> str:
+    """读出注册表里当前记录的自启命令行，没有就返回空串。"""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, APP_NAME)
+            return str(value)
+    except Exception:
+        return ""
+
+
+def repair_autostart() -> str:
+    """自启路径和当前 exe 对不上（比如用户把文件夹改名了）就改回来。
+
+    返回修正说明，没动过就返回空串。
+    """
+    if not getattr(sys, "frozen", False):
+        # 开发/调试运行时路径是 pythonw + main.py，别把用户的自启改成这个
+        return ""
+    current = autostart_command()
+    if not current:
+        return ""
+    want = launch_command()
+    if current.strip().lower() == want.strip().lower():
+        return ""
+    if set_autostart(True):
+        return f"{current} → {want}"
+    return f"修正失败，仍是 {current}"
+
+
 def is_autostart() -> bool:
     try:
         import winreg
