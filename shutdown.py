@@ -47,17 +47,70 @@ def _no_window() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 
+def _initiate_shutdown(seconds: int) -> tuple[bool, str]:
+    """用 InitiateShutdownW 直接下达关机，不经过 shutdown.exe 的关机原因对话框。
+
+    shutdown.exe 带 /d p:0:0 时，某些机器（组策略要求填写关机原因、或有多用户登录）
+    会弹出「关闭 Windows / 注销」的选择框等用户点确认，窗口一被关掉关机就没了，
+    而命令本身早就返回 0，日志里就变成了「成功但没关」。
+    API 调用把原因直接写进参数，系统不会再弹框。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        func = advapi.InitiateShutdownW
+    except Exception as exc:  # noqa: BLE001
+        return False, f"advapi32 不可用：{exc}"
+
+    func.argtypes = [
+        wintypes.LPCWSTR,   # lpMachineName
+        wintypes.LPCWSTR,   # lpMessage
+        wintypes.DWORD,     # dwGracePeriod
+        wintypes.DWORD,     # dwShutdownFlags
+        wintypes.DWORD,     # dwReason
+    ]
+    func.restype = wintypes.DWORD
+
+    SHUTDOWN_FORCE_OTHERS = 0x00000001
+    SHUTDOWN_FORCE_SELF = 0x00000002
+    SHTDN_REASON_MAJOR_OTHER = 0x00000000
+    SHTDN_REASON_FLAG_PLANNED = 0x80000000
+
+    code = func(
+        None,
+        COMMENT,
+        int(seconds),
+        SHUTDOWN_FORCE_OTHERS | SHUTDOWN_FORCE_SELF,
+        SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED,
+    )
+    if code == 0:
+        return True, f"{seconds} 秒后关机"
+    hint = {
+        5: "权限不足（可能需要管理员）",
+        1314: "缺少关机特权",
+        1190: "已有一次关机在排队",
+        1115: "关机会话不可用",
+    }.get(code, "")
+    return False, f"InitiateShutdown 返回 {code}" + (f"（{hint}）" if hint else "")
+
+
 def perform_shutdown(seconds: int = 30) -> tuple[bool, str]:
     """真正执行关机；带 30 秒缓冲，这段时间里 shutdown /a 还能取消。
 
-    /f 必须带：不带的话 Windows 会先礼后兵，让每个程序自己关（WM_QUERYENDSESSION），
-    微信这类会弹「退出登录？」把关机卡住，系统就弹出「这些应用阻止关机」的界面等你点。
-    /d p:0:0 是「计划内 / 其它原因」，组策略要求填关机原因时不会再多弹一个选择框。
+    先走 Win32 API（不会弹关机原因框），失败再退回 shutdown.exe；
+    两条路都可能被系统策略拦下，所以返回值只在系统明确受理时才是 True。
     """
     if os.environ.get(ENV_DRY_RUN):
         return False, "dry-run（DESKMATE_NO_SHUTDOWN 已设置，没有真的关机）"
     if sys.platform != "win32":
         return False, "只支持 Windows"
+
+    ok, msg = _initiate_shutdown(seconds)
+    if ok:
+        return True, msg
+
     try:
         proc = subprocess.run(
             [
@@ -66,8 +119,6 @@ def perform_shutdown(seconds: int = 30) -> tuple[bool, str]:
                 "/f",
                 "/t",
                 str(int(seconds)),
-                "/d",
-                "p:0:0",
                 "/c",
                 COMMENT,
             ],
@@ -76,11 +127,11 @@ def perform_shutdown(seconds: int = 30) -> tuple[bool, str]:
             timeout=10,
         )
     except Exception as exc:  # noqa: BLE001
-        return False, f"调用 shutdown 失败：{exc}"
+        return False, f"{msg}；调用 shutdown 也失败：{exc}"
     if proc.returncode == 0:
-        return True, f"{seconds} 秒后关机"
+        return True, f"{seconds} 秒后关机（走 shutdown.exe）"
     detail = (proc.stderr or proc.stdout or b"").decode("mbcs", "ignore").strip()
-    return False, detail or f"shutdown 返回 {proc.returncode}"
+    return False, f"{msg}；shutdown.exe：{detail or proc.returncode}"
 
 
 def cancel_pending() -> bool:

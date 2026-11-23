@@ -37,6 +37,7 @@ from toast import (
     ToastManager,
     show_off_again,
     show_shutdown,
+    show_shutdown_test,
     show_off_work,
     show_pre_off,
     show_sit,
@@ -499,25 +500,23 @@ class DeskMate:
         log(f"下班收尾·关屏：{detail}")
 
     def test_shutdown_flow(self) -> None:
-        """测试自动关机：走一遍关机命令（dry-run）+ 弹真实提醒，不写跳过记录。"""
-        from shutdown import ENV_DRY_RUN, perform_shutdown
+        """测试自动关机：真的调用关机，留 60 秒可以取消。"""
+        from shutdown import perform_shutdown
 
-        os.environ[ENV_DRY_RUN] = "1"
-        try:
-            _ok, msg = perform_shutdown(seconds=30)
-        finally:
-            os.environ.pop(ENV_DRY_RUN, None)
-        log(f"关机测试：{msg}")
-        show_shutdown(
-            self.toasts,
-            WARN_BEFORE // 60,
-            self._test_toast_action,
-            note=f"测试模式：关机命令已模拟（{msg}），不会真的关机。",
-        )
-
-    def _test_toast_action(self, key: str) -> None:
-        # 测试时点「今晚不关」不写跳过记录，免得影响真正的关机
-        log(f"关机测试提醒：点了 {key}")
+        seconds = 60
+        ok, msg = perform_shutdown(seconds=seconds)
+        log(f"关机测试：{msg}" + ("（成功）" if ok else "（未执行）"))
+        if not ok:
+            self.toasts.show(
+                ORANGE,
+                "关机测试没成功",
+                msg,
+                [("知道了", "primary", "ok")],
+                self.on_toast_action,
+                auto_close_ms=0,
+            )
+            return
+        show_shutdown_test(self.toasts, seconds, self.on_toast_action)
 
     def _check_shutdown(self, now: datetime) -> None:
         """到点自动关机：提前 5 分钟弹提醒，到点执行。"""
@@ -569,6 +568,19 @@ class DeskMate:
             self.engine.snooze_off(10)
         elif key == "shutdown_skip":
             self.shutdown.skip_today()
+        elif key == "shutdown_cancel":
+            from shutdown import cancel_pending
+
+            done = cancel_pending()
+            log("关机测试：用户取消" + ("（成功）" if done else "（取消失败）"))
+            self.toasts.show(
+                MINT if done else ORANGE,
+                "已取消关机" if done else "取消没成功",
+                "刚才那次测试关机已经撤销。" if done else "系统没接受取消，尽快用 shutdown /a 手动撤销。",
+                [("知道了", "primary", "ok")],
+                self.on_toast_action,
+                auto_close_ms=0,
+            )
         elif key == "shutdown_ok":
             pass
         self.on_tick()

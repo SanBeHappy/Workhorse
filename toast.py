@@ -461,3 +461,18 @@ def show_shutdown(mgr: ToastManager, minutes: int, on_action, note: str = "") ->
         pinned=True,
         urgent=True,
     )
+
+
+def show_shutdown_test(mgr: ToastManager, seconds: int, on_action, note: str = "") -> None:
+    """测试按钮：真的下达了关机，给一个能立刻取消的窗口。"""
+    body = f"系统已受理，{seconds} 秒后真的关机。不想关就点左边取消。"
+    mgr.show(
+        ORANGE,
+        f"测试：{seconds} 秒后关机",
+        (note + "\n" + body) if note else body,
+        [("取消关机", "ghost", "shutdown_cancel"), ("知道了", "primary", "ok")],
+        on_action,
+        auto_close_ms=0,
+        pinned=True,
+        urgent=True,
+    )

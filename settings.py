@@ -641,10 +641,9 @@ class SettingsWindow(QDialog):
     def _test_shutdown(self) -> None:
         answer = QMessageBox.question(
             self,
-            "测试关机提醒",
-            "会立刻弹一次「5 分钟后自动关机」的提醒，并把关机命令走一遍。\n"
-            "测试模式不会真的关机，也不会写「今晚不关」的跳过记录。\n\n"
-            "刚改过设置的话，建议先点保存再测试。现在测试吗？",
+            "测试自动关机",
+            "会真的执行关机：60 秒后系统关闭，期间可以点「取消关机」撤销。\n"
+            "请先保存好手头的东西再测。\n\n现在测试吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
